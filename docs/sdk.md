@@ -108,8 +108,9 @@ class PortSpeed(IntEnum):
     M1000F = 6   # 1000 Mbps full-duplex
 
 class QoSMode(IntEnum):
-    PORT_BASED = 1
-    DOT1P      = 2
+    PORT_BASED = 0
+    DOT1P      = 1
+    DSCP       = 2
 
 class StormType(IntEnum):
     UNKNOWN_UNICAST = 1
@@ -460,7 +461,8 @@ sw.set_pvid([1, 2], 10)    # set ports 1 and 2 to PVID 10
 
 ```python
 mode, ports = sw.get_qos_settings()
-print('Mode:', 'port-based' if mode == QoSMode.PORT_BASED else '802.1p')
+mode_name = {QoSMode.PORT_BASED: 'port-based', QoSMode.DOT1P: '802.1p', QoSMode.DSCP: 'DSCP'}
+print('Mode:', mode_name.get(mode, str(mode)))
 for p in ports:
     print(f'Port {p.port}: priority {p.priority}')
 ```
@@ -470,6 +472,7 @@ for p in ports:
 ```python
 sw.set_qos_mode(QoSMode.PORT_BASED)
 sw.set_qos_mode(QoSMode.DOT1P)
+sw.set_qos_mode(QoSMode.DSCP)
 ```
 
 #### `set_port_priority(ports: List[int], priority: int)`
@@ -637,8 +640,13 @@ _ports_to_bits([1, 2, 3])   # 0x07 = 7
 
 ## Error handling
 
-All network errors propagate as `requests.exceptions.RequestException`
-subclasses.  Authentication failures raise `RuntimeError` with a descriptive
+Most network errors propagate as `requests.exceptions.RequestException`
+subclasses.  **Exception:** certain write operations (QoS mode, bandwidth
+control, storm control) cause the switch to drop the TCP connection after
+responding; the SDK catches `ConnectionError` in those cases, marks the
+session expired, and returns silently rather than raising.
+
+Authentication failures raise `RuntimeError` with a descriptive
 message including the firmware's `errType` code:
 
 | errType | Meaning |

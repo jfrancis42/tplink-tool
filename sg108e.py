@@ -62,8 +62,9 @@ class PortSpeed(IntEnum):
 
 
 class QoSMode(IntEnum):
-    PORT_BASED  = 1
-    DOT1P       = 2
+    PORT_BASED  = 0   # "Port Based"        (form value 0)
+    DOT1P       = 1   # "802.1P Based"       (form value 1)
+    DSCP        = 2   # "DSCP/802.1P Based"  (form value 2)
 
 
 # ---------------------------------------------------------------------------
@@ -418,14 +419,48 @@ class Switch:
         form when a key must appear multiple times, e.g. portid=1&portid=2).
         Re-authenticates automatically if the session was reset by a prior
         operation (e.g. VLAN mode change).
+
+        Some CGIs (QoS, bandwidth) cause the switch to restart its internal
+        web server immediately after processing the request, dropping the TCP
+        connection before sending a response.  We treat ConnectionError as
+        "write was applied; session needs re-authentication" rather than
+        propagating it as a fatal exception.
         """
         self._ensure_session()
-        r = self._session.get(self._url(path), params=params, timeout=self.timeout)
+        try:
+            r = self._session.get(self._url(path), params=params, timeout=self.timeout)
+        except requests.exceptions.ConnectionError:
+            # The switch dropped the connection after processing the write.
+            # Mark the session as expired so the next call re-authenticates.
+            self._logged_in = False
+            return None
         r.raise_for_status()
         if self._is_login_page(r.text):
             self._logged_in = False
             self.login()
             r = self._session.get(self._url(path), params=params, timeout=self.timeout)
+            r.raise_for_status()
+        return r
+
+    def _cfg_post(self, path: str, params) -> requests.Response:
+        """
+        Send a configuration change via POST with form-encoded body.
+
+        Used for CGIs whose HTML forms have method=POST (QoS, bandwidth,
+        storm control).  params may be a dict or a list of (key, value) tuples.
+        Handles session expiry and TCP drops identically to _cfg.
+        """
+        self._ensure_session()
+        try:
+            r = self._session.post(self._url(path), data=params, timeout=self.timeout)
+        except requests.exceptions.ConnectionError:
+            self._logged_in = False
+            return None
+        r.raise_for_status()
+        if self._is_login_page(r.text):
+            self._logged_in = False
+            self.login()
+            r = self._session.post(self._url(path), data=params, timeout=self.timeout)
             r.raise_for_status()
         return r
 
@@ -550,7 +585,8 @@ class Switch:
 
     def set_led(self, on: bool):
         """Enable or disable the port LEDs."""
-        self._cfg('led_on_set.cgi', {'led_cfg': '1' if on else '0'})
+        # Form field name is rd_led (radio button); led_cfg is the submit button name.
+        self._cfg('led_on_set.cgi', {'rd_led': '1' if on else '0', 'led_cfg': 'Apply'})
 
     def change_password(self, old_password: str, new_password: str, username: Optional[str] = None):
         """Change the admin password."""
@@ -989,10 +1025,11 @@ class Switch:
         Return the QoS mode and per-port priority settings.
 
         Returns (mode, [QoSPortConfig, ...]).
-        mode: QoSMode.PORT_BASED or QoSMode.DOT1P
+        mode: QoSMode.PORT_BASED, QoSMode.DOT1P, or QoSMode.DSCP
         """
         html = self._page('QosBasicRpm')
-        mode = QoSMode(_extract_var(html, 'qosMode') or 2)
+        raw_mode = _extract_var(html, 'qosMode')
+        mode = QoSMode(raw_mode if raw_mode is not None else 2)
         n    = _extract_var(html, 'portNumber') or 8
         pPri = _extract_var(html, 'pPri') or []
         ports = [QoSPortConfig(port=i + 1, priority=pPri[i] if i < len(pPri) else 0)
@@ -1000,8 +1037,12 @@ class Switch:
         return mode, ports
 
     def set_qos_mode(self, mode: QoSMode):
-        """Set QoS scheduling mode (port-based or 802.1p)."""
-        self._cfg('qos_mode_set.cgi', {'qos_mode': str(int(mode))})
+        """Set QoS scheduling mode (port-based, 802.1p, or DSCP).
+
+        The form uses method=POST and the radio-button field name is
+        rd_qosmode (not qos_mode).  Values: 0=PORT_BASED, 1=DOT1P, 2=DSCP.
+        """
+        self._cfg_post('qos_mode_set.cgi', {'rd_qosmode': str(int(mode)), 'qosmode': 'Apply'})
 
     def set_port_priority(self, ports: List[int], priority: int):
         """
@@ -1009,11 +1050,14 @@ class Switch:
 
         ports:    list of 1-based port numbers
         priority: 1=lowest, 2=normal, 3=medium, 4=highest
+
+        The select element uses 0-based option values (0–3), so priority is
+        converted to 0-based before submission.  The form uses POST.
         """
-        params: dict = {'port_queue': str(priority), 'apply': 'Apply'}
+        params: dict = {'port_queue': str(priority - 1), 'apply': 'Apply'}
         for p in ports:
             params[f'sel_{p}'] = '1'
-        self._cfg('qos_port_priority_set.cgi', params)
+        self._cfg_post('qos_port_priority_set.cgi', params)
 
     def get_bandwidth_control(self) -> List[BandwidthEntry]:
         """
@@ -1044,7 +1088,7 @@ class Switch:
         params: dict = {'igrRate': str(ingress_kbps), 'egrRate': str(egress_kbps), 'applay': 'Apply'}
         for p in ports:
             params[f'sel_{p}'] = '1'
-        self._cfg('qos_bandwidth_set.cgi', params)
+        self._cfg_post('qos_bandwidth_set.cgi', params)
 
     def get_storm_control(self) -> List[StormEntry]:
         """Return storm control configuration per port."""
@@ -1085,6 +1129,7 @@ class Switch:
                                  storm_types=[StormType.BROADCAST, StormType.MULTICAST])
         """
         # state=1&rate=1&stormType=1&stormType=2&stormType=4&sel_1=1&applay=Apply
+        # The form uses method=POST.
         if storm_types is None:
             storm_types = StormType.all()
         params: list = [('state', '1' if enabled else '0'), ('applay', 'Apply')]
@@ -1094,7 +1139,7 @@ class Switch:
                 params.append(('stormType', str(int(t))))
         for p in ports:
             params.append((f'sel_{p}', '1'))
-        self._cfg('qos_storm_set.cgi', params)
+        self._cfg_post('qos_storm_set.cgi', params)
 
     # ==================================================================
     # Cable diagnostics
