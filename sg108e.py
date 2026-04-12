@@ -386,6 +386,7 @@ class Switch:
         self._login_time: float = 0.0
         # The switch sets Max-Age=600; re-auth before that
         self._session_ttl: float = 550.0
+        self._port_count: int = 8  # updated from switch at login
 
     # ------------------------------------------------------------------
     # URL helpers
@@ -496,6 +497,12 @@ class Switch:
 
         self._logged_in = True
         self._login_time = time.time()
+        # Cache port count so add_dot1q_vlan works correctly on any port count
+        try:
+            r = self._session.get(self._url('PortSettingRpm.htm'), timeout=self.timeout)
+            self._port_count = _extract_var(r.text, 'max_port_num') or 8
+        except Exception:
+            self._port_count = 8
 
     def logout(self):
         """Log out of the switch and clear the session."""
@@ -983,7 +990,7 @@ class Switch:
         tagged_set   = set(tagged_ports   or [])
         untagged_set = set(untagged_ports or [])
         params: dict = {'vid': str(vid), 'vname': name, 'qvlan_add': 'Add/Modify'}
-        for i in range(1, 9):
+        for i in range(1, self._port_count + 1):
             if i in tagged_set:
                 params[f'selType_{i}'] = '1'
             elif i in untagged_set:

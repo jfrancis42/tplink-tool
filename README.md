@@ -1,24 +1,19 @@
 # tplink-tool
 
-> **Early development — use with caution.**
-> This project is brand new and has had only minimal testing against a single
-> switch.  Many write operations have not been exercised beyond basic smoke
-> tests, and some have not been tested at all.  The API and CLI command set
-> may change without notice.  **Do not use this on production switches without
-> verifying each operation first.**
-
-A Python SDK and interactive CLI for the **TP-Link TL-SG108E** 8-port managed
+A Python SDK and interactive CLI for the **TP-Link TL-SG108E** managed
 switch — no browser required.
 
 The switch has no REST API, no SSH, and no serial console.  This project
 reverse-engineers its HTTP web UI to provide a clean Python interface and a
 Cisco IOS-inspired shell.
 
-Developed and lightly tested on:
+Developed and tested on:
 - Hardware: TL-SG108E v6.0
 - Firmware: 1.0.0 Build 20230218 Rel.50633
 
-Compatibility with other hardware or firmware revisions is unknown.
+A full test suite passes against this hardware.  Adjacent firmware revisions
+are likely compatible.  Other TP-Link managed switches that share the same
+web UI may also work, though this has not been tested.
 
 ## Files
 

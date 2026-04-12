@@ -285,9 +285,11 @@ class TestLogin:
     def test_session_reauth_on_expired_cookie(self, sw):
         """If a page fetch returns the login page, the SDK re-authenticates."""
         sw._logged_in = True
-        # First GET returns expired session HTML; second returns real content
+        # First GET returns expired session HTML; login() then fetches
+        # PortSettingRpm to cache port count; third GET is the actual retry.
         sw._session.get.side_effect = [
             make_response(EXPIRED_SESSION_HTML),  # triggers re-auth
+            make_response(PORT_SETTINGS_HTML),    # port count fetch inside login()
             make_response(SYSTEM_INFO_HTML),       # after re-auth, success
         ]
         sw._session.post.return_value = make_response(LOGIN_OK_HTML)

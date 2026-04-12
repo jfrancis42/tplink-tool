@@ -1,9 +1,11 @@
 # TL-SG108E Python SDK Reference
 
 `sg108e.py` is a pure-Python library for reading and configuring a
-TP-Link TL-SG108E 8-port managed switch.  It requires only the `requests`
-package and works against hardware revision 6.0 (firmware 1.0.0 Build
-20230218 Rel.50633) and likely adjacent revisions.
+TP-Link TL-SG108E managed switch.  It requires only the `requests` package.
+A full test suite passes against hardware revision 6.0 (firmware 1.0.0 Build
+20230218 Rel.50633); adjacent revisions are likely compatible.  Other TP-Link
+managed switches that share the same web UI may also work, though this has
+not been tested.
 
 ## Contents
 
@@ -196,7 +198,7 @@ sw.set_led(False)   # turn off port LEDs
 
 #### `get_port_settings() → List[PortInfo]`
 
-Returns one `PortInfo` per physical port (8 entries).
+Returns one `PortInfo` per physical port.
 
 ```python
 for p in sw.get_port_settings():
