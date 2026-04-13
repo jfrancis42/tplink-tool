@@ -491,9 +491,17 @@ class Switch:
                     'Check username and password.'
                 )
 
-        # Confirm we have a session cookie
+        # Confirm login succeeded.  Most firmware versions set H_P_SSID here;
+        # some older versions omit the cookie but the session is still valid.
         if not any('H_P_SSID' in c.name for c in self._session.cookies):
-            raise RuntimeError('Login did not return a session cookie.')
+            # Fall back: probe a benign page to verify the session is usable.
+            probe = self._session.get(self._url('SystemInfoRpm.htm'), timeout=self.timeout)
+            if self._is_login_page(probe.text):
+                raise RuntimeError(
+                    'Login did not return a session cookie and a subsequent '
+                    'API probe confirmed the session is not active. '
+                    'Check username and password.'
+                )
 
         self._logged_in = True
         self._login_time = time.time()
