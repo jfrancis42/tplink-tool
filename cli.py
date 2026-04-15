@@ -17,6 +17,7 @@ import re
 import argparse
 import getpass
 import textwrap
+import requests
 
 sys.path.insert(0, os.path.dirname(__file__))
 from sg108e import (
@@ -139,18 +140,30 @@ class SwitchCLI(cmd.Cmd):
         line = line.strip()
         if not line:
             return
-        # 'no' prefix — route to _do_no
-        if re.match(r'^no\b', line, re.IGNORECASE):
-            return self._do_no(line[2:].strip())
-        # 'do' prefix — run exec command from any mode
-        if re.match(r'^do\b', line, re.IGNORECASE):
-            saved = self._mode
-            self._mode = 'exec'
-            result = self.onecmd(line[2:].strip())
-            self._mode = saved
-            self._update_prompt()
-            return result
-        return super().onecmd(line)
+        try:
+            # 'no' prefix — route to _do_no
+            if re.match(r'^no\b', line, re.IGNORECASE):
+                return self._do_no(line[2:].strip())
+            # 'do' prefix — run exec command from any mode
+            if re.match(r'^do\b', line, re.IGNORECASE):
+                saved = self._mode
+                self._mode = 'exec'
+                result = self.onecmd(line[2:].strip())
+                self._mode = saved
+                self._update_prompt()
+                return result
+            return super().onecmd(line)
+        except requests.exceptions.ConnectionError:
+            print(f'\n  % Connection to {self.sw.host} lost.')
+            return True   # stop the cmdloop
+        except requests.exceptions.Timeout:
+            print(f'\n  % Connection to {self.sw.host} timed out.')
+            return True
+        except requests.exceptions.HTTPError as e:
+            print(f'\n  % HTTP error: {e}')
+            return True
+        except RuntimeError as e:
+            print(f'\n  % Switch error: {e}')
 
     def default(self, line):
         cmd_word, args, _ = self.parseline(line)
@@ -634,8 +647,10 @@ class SwitchCLI(cmd.Cmd):
             return
         parts = args.split()
         # Accept: username admin password <old> <new>
-        # Strip leading 'admin' and 'password' keywords
-        while parts and parts[0].lower() in ('admin', 'password'):
+        # Strip exactly one leading 'admin' and one 'password' keyword
+        if parts and parts[0].lower() == 'admin':
+            parts = parts[1:]
+        if parts and parts[0].lower() == 'password':
             parts = parts[1:]
         if len(parts) < 2:
             print('  Usage: username admin password <old-password> <new-password>')
@@ -1343,18 +1358,20 @@ class SwitchCLI(cmd.Cmd):
                 line(f' channel-group {p.trunk_id}')
             if q_en and pvids:
                 pvid = pvids[p.port - 1] if p.port <= len(pvids) else 1
-                # Show access vlan if port is untagged on a non-default VLAN
                 for v in q_vlans:
-                    if v.vid == 1:
-                        continue
                     u = _bits_to_ports(v.untagged_members)
                     t = _bits_to_ports(v.tagged_members)
                     if p.port in u:
+                        # The switch firmware cannot remove ports from VLAN 1;
+                        # all ports are permanently untagged members of it.
+                        # Only show VLAN 1 untagged when PVID=1, i.e. when it
+                        # is actually operative for this port.
+                        if v.vid == 1 and pvid != 1:
+                            continue
                         line(f' switchport access vlan {v.vid}')
                     elif p.port in t:
                         line(f' switchport trunk allowed vlan add {v.vid}')
-                if pvid != 1:
-                    line(f' switchport pvid {pvid}')
+                line(f' switchport pvid {pvid}')
             line('!')
         line('end')
 
@@ -1582,7 +1599,10 @@ def main():
     except KeyboardInterrupt:
         print()
     finally:
-        sw.logout()
+        try:
+            sw.logout()
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':

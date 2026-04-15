@@ -394,7 +394,7 @@ class TestSetIpSettings:
         ]
         sw.set_ip_settings(dhcp=True)
         write_params = sw._session.get.call_args_list[1].kwargs['params']
-        assert write_params['dhcpSetting'] == '1'
+        assert write_params['dhcpSetting'] == 'enable'
 
     def test_dhcp_disabled(self, sw):
         sw._session.get.side_effect = [
@@ -403,7 +403,7 @@ class TestSetIpSettings:
         ]
         sw.set_ip_settings(dhcp=False)
         write_params = sw._session.get.call_args_list[1].kwargs['params']
-        assert write_params['dhcpSetting'] == '0'
+        assert write_params['dhcpSetting'] == 'disable'
 
 
 class TestLed:

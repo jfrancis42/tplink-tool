@@ -586,8 +586,9 @@ class Switch:
         the current configuration and re-submitted unchanged.
         """
         current = self.get_ip_settings()
+        use_dhcp = dhcp if dhcp is not None else current.dhcp
         self._cfg('ip_setting.cgi', {
-            'dhcpSetting': '1' if (dhcp if dhcp is not None else current.dhcp) else '0',
+            'dhcpSetting': 'enable' if use_dhcp else 'disable',
             'ip_address':  ip      or current.ip,
             'ip_netmask':  netmask or current.netmask,
             'ip_gateway':  gateway or current.gateway,
