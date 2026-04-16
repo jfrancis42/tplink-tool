@@ -200,12 +200,17 @@ class StormType(IntEnum):
         return [cls.UNKNOWN_UNICAST, cls.MULTICAST, cls.BROADCAST]
 
 
-# Storm control rate index → kbps mapping (inferred from firmware UI options)
+# Storm control rate index → kbps mapping.
+# The firmware's qos_storm_set.cgi accepts kbps directly (not an index).
+# The index is used only as a user-facing convenience; internally it is
+# always converted to kbps before submission.
 STORM_RATE_KBPS: Dict[int, int] = {
     1: 64,     2: 128,    3: 256,    4: 512,
     5: 1024,   6: 2048,   7: 4096,   8: 8192,
     9: 16384, 10: 32768, 11: 65536, 12: 131072,
 }
+# Reverse mapping: kbps → rate index (for parsing scInfo on read)
+_KBPS_TO_RATE_INDEX: Dict[int, int] = {v: k for k, v in STORM_RATE_KBPS.items()}
 
 
 @dataclass
@@ -1114,17 +1119,19 @@ class Switch:
         html = self._page('QosStormControlRpm')
         n      = _extract_var(html, 'portNumber') or 8
         scInfo = _extract_var(html, 'scInfo') or []
-        # scInfo layout per port: [rate_index, storm_type_mask, state, ...]  stride=3
+        # scInfo layout per port (stride=3): [rate_kbps, storm_type_mask, <unused>]
+        # rate_kbps == 0 means disabled; the firmware stores kbps directly.
         entries = []
         for i in range(n):
-            base = i * 3
-            rate   = scInfo[base]     if len(scInfo) > base     else 0
-            types  = scInfo[base + 1] if len(scInfo) > base + 1 else 0
-            state  = scInfo[base + 2] if len(scInfo) > base + 2 else 0
+            base  = i * 3
+            kbps  = scInfo[base]     if len(scInfo) > base     else 0
+            types = scInfo[base + 1] if len(scInfo) > base + 1 else 0
+            enabled = kbps > 0
+            rate_index = _KBPS_TO_RATE_INDEX.get(kbps, 0) if enabled else 0
             entries.append(StormEntry(
                 port=i + 1,
-                enabled=bool(state),
-                rate_index=rate,
+                enabled=enabled,
+                rate_index=rate_index,
                 storm_types=types,
             ))
         return entries
@@ -1147,13 +1154,14 @@ class Switch:
             sw.set_storm_control([1, 2], rate_index=5,
                                  storm_types=[StormType.BROADCAST, StormType.MULTICAST])
         """
-        # state=1&rate=1&stormType=1&stormType=2&stormType=4&sel_1=1&applay=Apply
-        # The form uses method=POST.
+        # state=1&rate=<kbps>&stormType=1&stormType=2&stormType=4&sel_1=1&applay=Apply
+        # The form uses method=POST.  The rate parameter is kbps, not an index.
         if storm_types is None:
             storm_types = StormType.all()
         params: list = [('state', '1' if enabled else '0'), ('applay', 'Apply')]
         if enabled:
-            params.append(('rate', str(rate_index)))
+            kbps = STORM_RATE_KBPS.get(rate_index, 64)
+            params.append(('rate', str(kbps)))
             for t in storm_types:
                 params.append(('stormType', str(int(t))))
         for p in ports:
