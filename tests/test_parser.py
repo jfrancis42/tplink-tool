@@ -1,5 +1,5 @@
 """
-Unit tests for the JS-parsing helpers in sg108e.py.
+Unit tests for the JS-parsing helpers in tplink_switch.py.
 
 These tests require no network access and no live switch.
 """
@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, '/home/jfrancis/tplink')
 
 import pytest
-from sg108e import _extract_top_script, _extract_var, _js_to_py, _bits_to_ports, _ports_to_bits
+from tplink_switch import _extract_top_script, _extract_var, _js_to_py, _bits_to_ports, _ports_to_bits
 
 
 # ---------------------------------------------------------------------------

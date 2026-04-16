@@ -1,6 +1,6 @@
 # TL-SG108E Python SDK Reference
 
-`sg108e.py` is a pure-Python library for reading and configuring a
+`tplink_switch.py` is a pure-Python library for reading and configuring a
 TP-Link TL-SG108E managed switch.  It requires only the `requests` package.
 A full test suite passes against hardware revision 6.0 (firmware 1.0.0 Build
 20230218 Rel.50633); adjacent revisions are likely compatible.  Other TP-Link
@@ -40,14 +40,14 @@ not been tested.
 pip install requests
 ```
 
-Copy `sg108e.py` into your project (no package installation needed).
+Copy `tplink_switch.py` into your project (no package installation needed).
 
 ---
 
 ## Quick start
 
 ```python
-from sg108e import Switch, PortSpeed
+from tplink_switch import Switch, PortSpeed
 
 with Switch('192.168.0.1', password='admin') as sw:
     # Read system info
@@ -516,7 +516,7 @@ Storm control uses rate **indexes** 1–12, not raw kbps values.  Import
 `STORM_RATE_KBPS` to convert:
 
 ```python
-from sg108e import STORM_RATE_KBPS
+from tplink_switch import STORM_RATE_KBPS
 # {1: 64, 2: 128, 3: 256, 4: 512, 5: 1024, 6: 2048, 7: 4096,
 #  8: 8192, 9: 16384, 10: 32768, 11: 65536, 12: 131072}
 ```
@@ -622,7 +622,7 @@ Convert a bitmask to a list of 1-based port numbers.
 Bit 0 = port 1, bit 7 = port 8.
 
 ```python
-from sg108e import _bits_to_ports
+from tplink_switch import _bits_to_ports
 _bits_to_ports(0xFF)    # [1, 2, 3, 4, 5, 6, 7, 8]
 _bits_to_ports(0x81)    # [1, 8]
 _bits_to_ports(0x05)    # [1, 3]
@@ -633,7 +633,7 @@ _bits_to_ports(0x05)    # [1, 3]
 Inverse of `_bits_to_ports`.
 
 ```python
-from sg108e import _ports_to_bits
+from tplink_switch import _ports_to_bits
 _ports_to_bits([1, 8])      # 0x81 = 129
 _ports_to_bits([1, 2, 3])   # 0x07 = 7
 ```

@@ -20,7 +20,7 @@ import textwrap
 import requests
 
 sys.path.insert(0, os.path.dirname(__file__))
-from sg108e import (
+from tplink_switch import (
     Switch, PortSpeed, QoSMode, StormType, STORM_RATE_KBPS,
     _bits_to_ports, _ports_to_bits,
 )

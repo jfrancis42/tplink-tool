@@ -11,7 +11,7 @@ import time
 import pytest
 from unittest.mock import MagicMock, patch, call
 
-from sg108e import (
+from tplink_switch import (
     Switch, SystemInfo, IPSettings, PortInfo, PortStats, MirrorConfig,
     TrunkConfig, IGMPConfig, MTUVlanConfig, PortVlanEntry, Dot1QVlanEntry,
     QoSMode, QoSPortConfig, BandwidthEntry, StormEntry, StormType,

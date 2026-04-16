@@ -13,7 +13,7 @@ Then read back the configuration and verify it matches.
 import sys
 sys.path.insert(0, '/home/jfrancis/tplink')
 
-from sg108e import Switch, _bits_to_ports
+from tplink_switch import Switch, _bits_to_ports
 
 HOST     = '10.1.1.239'
 USERNAME = 'admin'

@@ -20,7 +20,7 @@ sys.path.insert(0, '/home/jfrancis/tplink')
 
 import time
 import pytest
-from sg108e import (
+from tplink_switch import (
     Switch, PortSpeed, QoSMode, StormType,
     SystemInfo, IPSettings, PortInfo, PortStats, MirrorConfig,
     TrunkConfig, IGMPConfig, MTUVlanConfig, PortVlanEntry, Dot1QVlanEntry,
@@ -130,9 +130,9 @@ class TestLiveReadSystemInfo:
         assert len(parts) == 6
         assert all(len(p) == 2 for p in parts)
 
-    def test_hardware_is_sg108e(self, sw):
+    def test_hardware_str_nonempty(self, sw):
         info = sw.get_system_info()
-        assert 'SG108E' in info.hardware.upper() or 'TL-SG108E' in info.hardware
+        assert info.hardware and len(info.hardware) > 0
 
 
 @pytest.mark.live
@@ -335,7 +335,7 @@ class TestLiveReadStormControl:
         assert len(entries) == 8
 
     def test_rate_index_valid(self, sw):
-        from sg108e import STORM_RATE_KBPS
+        from tplink_switch import STORM_RATE_KBPS
         entries = sw.get_storm_control()
         for e in entries:
             if e.enabled:

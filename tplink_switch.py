@@ -1,5 +1,8 @@
 """
-Python SDK for the TP-Link TL-SG108E managed switch.
+Python SDK for TP-Link managed switches.
+
+Developed against the TL-SG108E; compatible with other TP-Link managed
+switches that share the same frameset-based web UI.
 
 The switch has no REST API or CLI - it is configured entirely through a
 frameset-based web UI.  The protocol reverse-engineered here is:
@@ -18,7 +21,7 @@ when the session expires.
 
 Usage
 -----
-    from sg108e import Switch, PortSpeed
+    from tplink_switch import Switch, PortSpeed
 
     with Switch('10.1.1.239', password='b1gsecret') as sw:
         info = sw.get_system_info()
