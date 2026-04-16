@@ -1178,10 +1178,10 @@ class Switch:
 
         results = []
         for p in ports:
-            r = self._post('cable_diag_get.cgi', data={'portid': str(p)})
+            r = self._cfg_post('cable_diag_get.cgi', {'portid': str(p)})
             # Response embeds updated cablestate/cablelength JS vars
-            state  = _extract_var(r.text, 'cablestate')  or []
-            length = _extract_var(r.text, 'cablelength') or []
+            state  = _extract_var(r.text, 'cablestate')  or [] if r else []
+            length = _extract_var(r.text, 'cablelength') or [] if r else []
 
             idx = p - 1
             raw_state  = state[idx]  if isinstance(state,  list) and idx < len(state)  else -1
