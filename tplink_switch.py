@@ -623,7 +623,19 @@ class Switch:
 
     def reboot(self):
         """Reboot the switch (will briefly lose connectivity)."""
-        self._cfg('reboot.cgi', {'reboot_op': '1'})
+        self._ensure_session()
+        # Bypass _cfg: the firmware clears the session and redirects to the
+        # login page as part of processing the reboot.  _cfg would detect that
+        # redirect and attempt re-authentication against a switch that is
+        # already offline.  Fire-and-forget is the right behaviour here.
+        try:
+            self._session.get(
+                self._url('reboot.cgi'),
+                params={'reboot_op': '1'},
+                timeout=self.timeout,
+            )
+        except Exception:
+            pass
         self._logged_in = False
 
     def factory_reset(self):
@@ -631,7 +643,16 @@ class Switch:
         Reset to factory defaults.
         WARNING: This will reset the IP address to 192.168.0.1 and erase all config.
         """
-        self._cfg('reset.cgi', {'reset_op': '1'})
+        self._ensure_session()
+        # Same fire-and-forget rationale as reboot().
+        try:
+            self._session.get(
+                self._url('reset.cgi'),
+                params={'reset_op': '1'},
+                timeout=self.timeout,
+            )
+        except Exception:
+            pass
         self._logged_in = False
 
     def backup_config(self) -> bytes:
