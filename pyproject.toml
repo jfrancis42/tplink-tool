@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tplink-tool"
+version = "0.1.0"
+description = "Python SDK and CLI for TP-Link managed switches"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Jeff Francis", email = "gjfrancis@protonmail.com" },
+]
+keywords = ["tplink", "switch", "network", "vlan", "managed-switch", "cli", "sdk"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Networking",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "requests>=2.20",
+]
+
+[project.urls]
+Homepage = "https://ordo-artificum.com/products/tplink-tool/"
+Repository = "https://github.com/jfrancis42/tplink-tool"
+"Bug Tracker" = "https://github.com/jfrancis42/tplink-tool/issues"
+
+[project.scripts]
+tplink = "tplink_tool._cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tplink_tool"]

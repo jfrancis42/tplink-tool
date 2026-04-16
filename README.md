@@ -15,27 +15,45 @@ Developed and tested on:
 A full test suite passes against this hardware.  Other TP-Link managed
 switches that share the same web UI are likely compatible.
 
+## Installation
+
+```bash
+pip install tplink-tool
+```
+
+After installation, the `tplink` CLI command is available and the
+`tplink_tool` Python package is importable:
+
+```python
+from tplink_tool import Switch, PortSpeed
+```
+
+The legacy module name `tplink_switch` is still importable as a
+backward-compatibility shim.
+
 ## Files
 
 | File | Purpose |
 |---|---|
-| `tplink_switch.py` | Python SDK (`Switch` class, all read/write operations) |
-| `cli.py` | Interactive CLI (Cisco IOS-style) |
+| `src/tplink_tool/__init__.py` | Python SDK (`Switch` class, all read/write operations) |
+| `src/tplink_tool/_cli.py` | CLI entry point (installed as `tplink` command) |
+| `cli.py` | Standalone CLI script (same as `tplink` command, for direct use) |
+| `tplink_switch.py` | Backward-compatibility shim (imports from `tplink_tool`) |
 | `docs/sdk.md` | SDK programmer reference |
 | `docs/cli.md` | CLI user guide |
 
 ## Requirements
 
 ```bash
-pip install requests
+pip install tplink-tool
 ```
 
-No other dependencies.
+No other dependencies beyond `requests` (installed automatically).
 
 ## Quick start — SDK
 
 ```python
-from tplink_switch import Switch, PortSpeed
+from tplink_tool import Switch, PortSpeed
 
 with Switch('192.168.0.1', password='admin') as sw:
     # Read system info
@@ -59,7 +77,8 @@ See [docs/sdk.md](docs/sdk.md) for the full API reference.
 ## Quick start — CLI
 
 ```bash
-python3 cli.py 192.168.0.1
+tplink 192.168.0.1
+# or: python3 cli.py 192.168.0.1
 ```
 
 ```
