@@ -98,7 +98,7 @@ See [docs/cli.md](docs/cli.md) for the full command reference.
 - QoS (mode, per-port priority)
 - Bandwidth control (ingress/egress rate limiting)
 - Storm control
-- Cable diagnostics (TDR)
+- Cable diagnostics (TDR) — **see firmware note below**
 
 ### Write operations
 Everything listed above, plus:
@@ -106,6 +106,33 @@ Everything listed above, plus:
 - Factory reset
 - Reboot
 - Password change
+
+## Known firmware issues
+
+### Cable diagnostics (TDR) — TL-SG108E v6.0, firmware 1.0.0 Build 20230218 Rel.50633
+
+The `run_cable_diagnostic()` method is implemented and the status codes
+are correct per the firmware's own JavaScript:
+
+| Code | Meaning |
+|------|---------|
+| 0 | NoCable |
+| 1 | Normal |
+| 2 | Open (unterminated) |
+| 3 | Short |
+| 4 | OpenShort |
+| 5 | CrossCable |
+| -1 | NotTested |
+
+However, on the tested firmware the `cable_diag_get.cgi` POST handler
+silently drops the TCP connection before sending any HTTP response.  The
+GET endpoint returns cached state, which is initialized to -1 (NotTested)
+and never changes because the write side is non-functional.
+
+All diagnostic results therefore return `NotTested` on this firmware.
+The code is correct and ready; the limitation is a firmware bug.  If
+you test on a different firmware version and TDR works, please open an
+issue.
 
 ## Protocol notes
 
