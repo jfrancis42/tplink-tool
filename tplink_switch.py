@@ -1216,7 +1216,8 @@ class Switch:
             raw_state  = state[idx]  if isinstance(state,  list) and idx < len(state)  else -1
             raw_length = length[idx] if isinstance(length, list) and idx < len(length) else -1
 
-            status_map = {0: 'OK', 1: 'Short', 2: 'Open', 3: 'Unknown', -1: 'Unknown'}
+            status_map = {0: 'NoCable', 1: 'Normal', 2: 'Open', 3: 'Short',
+                          4: 'OpenShort', 5: 'CrossCable', -1: 'NotTested'}
             results.append(CableDiagResult(
                 port=p,
                 status=status_map.get(raw_state, 'Unknown'),
