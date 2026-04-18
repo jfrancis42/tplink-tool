@@ -1,36 +1,45 @@
 """
-Python SDK for TP-Link managed switches.
+Python SDK for TP-Link Easy Smart managed switches.
 
-Developed against the TL-SG108E; compatible with other TP-Link managed
-switches that share the same frameset-based web UI.
+Supports multiple switch families detected automatically at connection time.
+Use ``make_switch()`` for new code; instantiate ``Switch`` or ``SwitchDE``
+directly only when the model is known in advance.
 
-The switch has no REST API or CLI - it is configured entirely through a
-frameset-based web UI.  The protocol reverse-engineered here is:
+Model support
+-------------
+Verified:
+  TL-SG108E  (E-series, cookie sessions)     → Switch
+  TL-SG1016DE (DE-series, IP-based sessions) → SwitchDE
 
-  GET  /<PageName>.htm        → HTML with current state embedded as JavaScript
-                                variable declarations in the first <script> block.
+Unverified (assumed compatible, same protocol family):
+  TL-SG105E, TL-SG108PE, TL-SG116E          → Switch
+  TL-SG1008DE, TL-SG1024DE                  → SwitchDE
 
-  GET  /<name>.cgi?param=val  → Configuration write.  Parameters are passed as
-                                query-string arguments, NOT a POST body.
-                                The only exceptions are logon.cgi (POST) and
-                                conf_restore.cgi (POST multipart file upload).
+Protocol
+--------
+The switch has no REST API or CLI.  Configuration is done through a
+frameset-based HTTP web UI:
 
-Session management is cookie-based.  On successful login the switch sets
-H_P_SSID (Max-Age=600 seconds).  The SDK re-authenticates transparently
-when the session expires.
+  GET  /<PageName>.htm       → HTML with current state embedded as JavaScript
+                               variable declarations.
+  GET  /<name>.cgi?param=val → Configuration write (query-string params).
+                               Exceptions: logon.cgi (POST) and
+                               conf_restore.cgi (POST multipart).
+
+Session mechanisms differ by family:
+  E-series:  H_P_SSID cookie (Max-Age=600 s); re-authenticated transparently.
+  DE-series: client-IP tracking, no cookie; same TTL and re-auth behaviour.
 
 Usage
 -----
-    from tplink_tool import Switch, PortSpeed
+    from tplink_tool import make_switch, PortSpeed
 
-    with Switch('10.1.1.239', password='b1gsecret') as sw:
+    with make_switch('10.1.0.32', password='secret') as sw:
         info = sw.get_system_info()
-        print(info)
+        print(info.hardware)      # e.g. 'TL-SG1016DE 2.0'
 
         for p in sw.get_port_settings():
             print(p)
-
-        sw.set_port(1, speed=PortSpeed.AUTO, flow_control=False)
 """
 
 from __future__ import annotations
@@ -39,9 +48,10 @@ import ast
 import json
 import re
 import time
+import warnings
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Type
 
 import requests
 
@@ -344,7 +354,7 @@ def _extract_var(html: str, varname: str) -> Any:
     return _js_to_py(raw)
 
 
-def _bits_to_ports(mask: int, port_count: int = 8) -> List[int]:
+def _bits_to_ports(mask: int, port_count: int = 16) -> List[int]:
     """Convert a port bitmask (bit 0 = port 1) to a list of 1-based port numbers."""
     return [i + 1 for i in range(port_count) if mask & (1 << i)]
 
@@ -530,8 +540,37 @@ class Switch:
         self._session.cookies.clear()
         self._logged_in = False
 
+    @classmethod
+    def _from_probe(
+        cls,
+        host: str,
+        username: str,
+        password: str,
+        timeout: float,
+        session: requests.Session,
+        port_count: Optional[int] = None,
+    ) -> 'Switch':
+        """
+        Construct from an already-authenticated probe session.
+
+        Called by make_switch() to avoid a redundant second login.
+        The probe session is reused as the live session; the object starts
+        in the logged-in state with the TTL clock set to now.
+        """
+        obj = cls.__new__(cls)
+        obj.host = host
+        obj.username = username
+        obj.password = password
+        obj.timeout = timeout
+        obj._session = session
+        obj._logged_in = True
+        obj._login_time = time.time()
+        obj._session_ttl = 550.0
+        obj._port_count = port_count or 8
+        return obj
+
     def __enter__(self) -> 'Switch':
-        self.login()
+        self._ensure_session()
         return self
 
     def __exit__(self, *_):
@@ -1226,3 +1265,712 @@ class Switch:
         return results
 
 __version__ = '0.1.0'
+
+
+# ===========================================================================
+# TL-SG1016DE "Easy Smart" series
+# ===========================================================================
+
+class SwitchDE(Switch):
+    """
+    TP-Link TL-SG1016DE (and similar "Easy Smart DE" series) managed switch.
+
+    Key differences from TL-SG108E (which Switch targets):
+
+    - IP-based session: the switch authenticates by client IP; no cookie is
+      issued.  Login response contains 'logonInfo' array, not 'errType'.
+    - SystemInfoRpm.htm embeds data in HTML <span> elements, not JS vars.
+    - IpSettingRpm.htm embeds current values in <input value=""> attrs.
+    - PortSettingRpm.htm: flat configInfo[port*3] = (state, speed, fc);
+      contains // comments that must be stripped before parsing.
+    - 802.1Q VLAN CGIs renamed: vlan_8021q_based_enable.cgi /
+      vlan_8021q_based_set.cgi; per-port params use tag_N (not selType_N).
+    - Vlan8021QRpm.htm uses flat JS variables rather than a qvlan_ds dict.
+    - PVIDs array is 1-indexed (index 0 is an unused padding zero).
+    - PVID set CGI uses per-port checkboxes (portSelect_N), not a bitmask.
+    - Loop prevention write CGI uses 'loopfunction' param, not 'lpEn'.
+    - Bandwidth/storm data embedded as a comma string 'tmp_info' (same
+      stride-3 layout as SG108E, but split() instead of a JS array).
+    - MTU VLAN and port-based VLAN are not supported.
+    - TurnOnLEDRpm.htm does not exist; LED methods are no-ops.
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _strip_js_comments(text: str) -> str:
+        """Remove // single-line JS comments (e.g. //// separators in arrays)."""
+        return re.sub(r'//[^\n\r]*', '', text)
+
+    @staticmethod
+    def _is_login_page(text: str) -> bool:
+        return 'logon.cgi' in text and 'logonInfo' in text
+
+    @staticmethod
+    def _parse_tmp_info(html: str) -> List[int]:
+        """Extract and split the 'tmp_info' comma string used for bandwidth/storm."""
+        raw = _extract_var(html, 'tmp_info') or ''
+        try:
+            return [int(x) for x in raw.split(',') if x.strip()]
+        except ValueError:
+            return []
+
+    # ------------------------------------------------------------------
+    # Session management
+    # ------------------------------------------------------------------
+
+    def login(self):
+        r = self._session.post(
+            self._url('logon.cgi'),
+            data={'username': self.username, 'password': self.password, 'logon': 'Login'},
+            timeout=self.timeout,
+        )
+        r.raise_for_status()
+
+        # DE login response: logonInfo = new Array( error_code, ... )
+        # error_code 0 = success
+        m = re.search(r'logonInfo\s*=\s*new\s+Array\s*\(\s*(\d+)', r.text)
+        if m:
+            if int(m.group(1)) != 0:
+                raise RuntimeError(
+                    f'Login failed (logonInfo[0]={m.group(1)}). '
+                    'Check username and password.'
+                )
+        else:
+            # Unexpected page — probe to confirm session is usable
+            probe = self._session.get(self._url('SystemInfoRpm.htm'), timeout=self.timeout)
+            if self._is_login_page(probe.text):
+                raise RuntimeError(
+                    'Login probe failed. Check username and password.'
+                )
+
+        self._logged_in = True
+        self._login_time = time.time()
+        self._port_count = 16  # DE is a fixed 16-port device
+
+    @classmethod
+    def _from_probe(
+        cls,
+        host: str,
+        username: str,
+        password: str,
+        timeout: float,
+        session: requests.Session,
+        port_count: Optional[int] = None,
+    ) -> 'SwitchDE':
+        obj = super()._from_probe(
+            host=host, username=username, password=password, timeout=timeout,
+            session=session, port_count=port_count or 16,
+        )
+        return obj
+
+    # ------------------------------------------------------------------
+    # System info
+    # ------------------------------------------------------------------
+
+    def get_system_info(self) -> SystemInfo:
+        html = self._page('SystemInfoRpm')
+
+        def _span(id_: str) -> str:
+            m = re.search(rf'id="{re.escape(id_)}"[^>]*>([^<]+)<', html)
+            return m.group(1).strip() if m else ''
+
+        return SystemInfo(
+            description=_span('sp_devicetype'),
+            mac=_span('sp_macaddress'),
+            ip=_span('sp_ipaddress'),
+            netmask=_span('sp_netmask'),
+            gateway=_span('sp_gateway'),
+            firmware=_span('sp_firewareversion'),   # deliberate typo in DE HTML
+            hardware=_span('sp_hardwareversion'),
+        )
+
+    def get_ip_settings(self) -> IPSettings:
+        html = self._page('IpSettingRpm')
+
+        def _inp(id_: str) -> str:
+            m = re.search(rf'id="{re.escape(id_)}"[^>]*value="([^"]*)"', html)
+            return m.group(1).strip() if m else ''
+
+        dhcp_m = re.search(r'id="check_dhcp"[^>]*value="([^"]*)"', html)
+        dhcp = (dhcp_m.group(1) == 'enable') if dhcp_m else False
+        return IPSettings(
+            dhcp=dhcp,
+            ip=_inp('txt_addr'),
+            netmask=_inp('txt_mask'),
+            gateway=_inp('txt_gateway'),
+        )
+
+    # ------------------------------------------------------------------
+    # LED — not present on DE
+    # ------------------------------------------------------------------
+
+    def get_led(self) -> bool:
+        return True     # DE LEDs are always on (hardware-controlled, not software)
+
+    def set_led(self, on: bool):
+        pass            # DE has no software LED control
+
+    # ------------------------------------------------------------------
+    # Port settings
+    # ------------------------------------------------------------------
+
+    def get_port_settings(self) -> List[PortInfo]:
+        # Strip // comments before parsing; configInfo has //// separators
+        html = self._strip_js_comments(self._page('PortSettingRpm'))
+        n  = _extract_var(html, 'max_port_num') or self._port_count
+        ci = _extract_var(html, 'configInfo')
+        if ci is None:
+            raise RuntimeError('Could not parse PortSettingRpm.htm')
+        ports = []
+        for i in range(n):
+            base  = i * 3
+            state = ci[base]     if len(ci) > base     else 1
+            speed = ci[base + 1] if len(ci) > base + 1 else 1
+            fc    = ci[base + 2] if len(ci) > base + 2 else 0
+            ports.append(PortInfo(
+                port=i + 1,
+                enabled=bool(state),
+                speed_cfg=PortSpeed(speed) if speed in PortSpeed._value2member_map_ else None,
+                speed_act=None,   # not available in configInfo
+                fc_cfg=bool(fc),
+                fc_act=bool(fc),
+                trunk_id=0,       # would require a separate page fetch
+            ))
+        return ports
+
+    # ------------------------------------------------------------------
+    # Port mirror
+    # ------------------------------------------------------------------
+
+    def get_port_mirror(self) -> MirrorConfig:
+        html = self._strip_js_comments(self._page('PortMirrorRpm'))
+        dest = _extract_var(html, 'config_port') or 0
+        if not dest:
+            return MirrorConfig(enabled=False, dest_port=0, mode=0,
+                                ingress_ports=[], egress_ports=[])
+        ci = _extract_var(html, 'configInfo') or []
+        n  = self._port_count
+        ingress = [i + 1 for i in range(n) if len(ci) > i * 2     and ci[i * 2]]
+        egress  = [i + 1 for i in range(n) if len(ci) > i * 2 + 1 and ci[i * 2 + 1]]
+        return MirrorConfig(enabled=True, dest_port=dest, mode=0,
+                            ingress_ports=ingress, egress_ports=egress)
+
+    # ------------------------------------------------------------------
+    # Port trunk (LAG)
+    # ------------------------------------------------------------------
+
+    def get_port_trunk(self) -> TrunkConfig:
+        html = self._strip_js_comments(self._page('PortTrunkRpm'))
+        trunk_mem = _extract_var(html, 'trunkMem') or []
+        # trunkMem: MAX_GROUPS groups × SLOTS_PER_GRP port-number slots
+        # value = 1-based port number; 0 = empty slot
+        MAX_GROUPS    = 8
+        SLOTS_PER_GRP = 4
+        groups: Dict[int, List[int]] = {}
+        for g in range(MAX_GROUPS):
+            members = [
+                trunk_mem[g * SLOTS_PER_GRP + s]
+                for s in range(SLOTS_PER_GRP)
+                if (g * SLOTS_PER_GRP + s) < len(trunk_mem) and trunk_mem[g * SLOTS_PER_GRP + s]
+            ]
+            if members:
+                groups[g + 1] = members
+        return TrunkConfig(max_groups=MAX_GROUPS, port_count=self._port_count, groups=groups)
+
+    # ------------------------------------------------------------------
+    # IGMP snooping
+    # ------------------------------------------------------------------
+
+    def get_igmp_snooping(self) -> IGMPConfig:
+        html = self._page('IgmpSnoopingRpm')
+        # State embedded as literal integer in init functions, e.g.:
+        #   function igmpSnoopingEnableInit() { ... if ( 1 ) { ...enable... }
+        m_igmp = re.search(
+            r'igmpSnoopingEnableInit\s*\(\s*\)[^{]*\{[^i]*if\s*\(\s*(\d+)\s*\)', html)
+        m_supp = re.search(
+            r'igmpReportMsgSuppressionEnableInit\s*\(\s*\)[^{]*\{[^i]*if\s*\(\s*(\d+)\s*\)', html)
+        return IGMPConfig(
+            enabled=bool(int(m_igmp.group(1))) if m_igmp else False,
+            report_suppression=bool(int(m_supp.group(1))) if m_supp else False,
+            group_count=0,
+        )
+
+    # ------------------------------------------------------------------
+    # Loop prevention
+    # ------------------------------------------------------------------
+
+    def get_loop_prevention(self) -> bool:
+        html = self._page('LoopPreventionRpm')
+        m = re.search(r'loopfunction\.value\s*=\s*(\d+)', html)
+        return bool(int(m.group(1))) if m else False
+
+    def set_loop_prevention(self, enabled: bool):
+        # DE uses 'loopfunction' param; SG108E uses 'lpEn'
+        self._cfg_post('loop_prevention_set.cgi',
+                       {'loopfunction': '1' if enabled else '0', 'apply': 'Apply'})
+
+    # ------------------------------------------------------------------
+    # VLAN — MTU and port-based are not supported on DE
+    # ------------------------------------------------------------------
+
+    def get_mtu_vlan(self) -> MTUVlanConfig:
+        return MTUVlanConfig(enabled=False, port_count=self._port_count, uplink_port=1)
+
+    def set_mtu_vlan(self, enabled: bool, uplink_port: Optional[int] = None):
+        pass
+
+    def get_port_vlan(self) -> Tuple[bool, List[PortVlanEntry]]:
+        return False, []
+
+    def set_port_vlan_enabled(self, enabled: bool):
+        pass
+
+    # ------------------------------------------------------------------
+    # 802.1Q VLAN
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_port_str(s: str) -> int:
+        """
+        Convert a DE port-list string like '2,14-16' or '1-16' to a bitmask.
+        '--' or empty means no ports (returns 0).
+        """
+        if not s or s.strip() == '--':
+            return 0
+        mask = 0
+        for part in s.split(','):
+            part = part.strip()
+            if '-' in part:
+                lo, hi = part.split('-', 1)
+                for p in range(int(lo), int(hi) + 1):
+                    mask |= 1 << (p - 1)
+            elif part.isdigit():
+                mask |= 1 << (int(part) - 1)
+        return mask
+
+    def get_dot1q_vlans(self) -> Tuple[bool, List[Dot1QVlanEntry]]:
+        html      = self._page('Vlan8021QRpm')
+        enabled   = bool(_extract_var(html, 'qEnable') or 0)
+        vids      = _extract_var(html, 'qVIDs')          or []
+        names     = _extract_var(html, 'qVNames')         or []
+        tag_map   = _extract_var(html, 'qVTagMems_map')   or []
+        untag_map = _extract_var(html, 'qVUnTagMems_map') or []
+        tag_str   = _extract_var(html, 'qVTagMems_str')   or []
+        untag_str = _extract_var(html, 'qVUnTagMems_str') or []
+
+        def _members(map_val: int, str_val: str) -> int:
+            # DE firmware stores VLAN 1 map as 0 even when all ports are members.
+            # Fall back to parsing the human-readable string when map is 0.
+            if map_val:
+                return map_val
+            return self._parse_port_str(str_val)
+
+        def _norm_name(s: str) -> str:
+            return '' if s == '--' else s
+
+        entries = [
+            Dot1QVlanEntry(
+                vid=vids[i],
+                name=_norm_name(names[i]) if i < len(names) else '',
+                tagged_members=_members(
+                    tag_map[i]   if i < len(tag_map)   else 0,
+                    tag_str[i]   if i < len(tag_str)   else '--',
+                ),
+                untagged_members=_members(
+                    untag_map[i] if i < len(untag_map) else 0,
+                    untag_str[i] if i < len(untag_str) else '--',
+                ),
+            )
+            for i in range(len(vids))
+        ]
+        return enabled, entries
+
+    def set_dot1q_enabled(self, enabled: bool):
+        self._cfg('vlan_8021q_based_enable.cgi', {'qvlan_en': '1' if enabled else '0'})
+
+    def add_dot1q_vlan(
+        self,
+        vid: int,
+        name: str = '',
+        tagged_ports:   Optional[List[int]] = None,
+        untagged_ports: Optional[List[int]] = None,
+    ):
+        tagged_set   = set(tagged_ports   or [])
+        untagged_set = set(untagged_ports or [])
+        # tag_N: 0=untagged, 1=tagged, 2=not-member  (cf. SG108E's selType_N)
+        params: dict = {'qvlanid': str(vid), 'qvlanname': name, 'addModify': 'Add/Modify'}
+        for i in range(1, self._port_count + 1):
+            if i in tagged_set:
+                params[f'tag_{i}'] = '1'
+            elif i in untagged_set:
+                params[f'tag_{i}'] = '0'
+            else:
+                params[f'tag_{i}'] = '2'
+        self._cfg('vlan_8021q_based_set.cgi', params)
+
+    def delete_dot1q_vlan(self, vid: int):
+        raise NotImplementedError(
+            'delete_dot1q_vlan is not supported on TL-SG1016DE'
+        )
+
+    # ------------------------------------------------------------------
+    # PVID
+    # ------------------------------------------------------------------
+
+    def get_pvids(self) -> List[int]:
+        html = self._page('Vlan8021QPvidRpm')
+        raw = _extract_var(html, 'PVIDs') or []
+        # raw[0] is a padding zero; raw[1..N] = PVID for ports 1..N
+        # Return 0-indexed list (index 0 = port 1) to match SG108E convention
+        return list(raw[1:]) if raw else []
+
+    def set_pvid(self, ports: List[int], pvid: int):
+        # DE uses individual portSelect_N checkboxes, not a bitmask
+        params: list = [('Pvid', str(pvid)), ('apply', 'Apply')]
+        for p in ports:
+            params.append((f'portSelect_{p}', str(p)))
+        self._cfg('vlan_port_pvid_set.cgi', params)
+
+    # ------------------------------------------------------------------
+    # QoS
+    # ------------------------------------------------------------------
+
+    def get_qos_settings(self) -> Tuple[QoSMode, List[QoSPortConfig]]:
+        html = self._page('QosBasicRpm')
+        raw_mode = _extract_var(html, 'qosMode')
+        mode = QoSMode(raw_mode if raw_mode is not None else 0)
+        n = _extract_var(html, 'portNumber') or self._port_count
+        # Per-port priority not accessible without external JS; return zeros
+        return mode, [QoSPortConfig(port=i + 1, priority=0) for i in range(n)]
+
+    # ------------------------------------------------------------------
+    # Bandwidth control
+    # ------------------------------------------------------------------
+
+    def get_bandwidth_control(self) -> List[BandwidthEntry]:
+        html = self._page('QosBandWidthControlRpm')
+        n    = _extract_var(html, 'portNumber') or self._port_count
+        parts = self._parse_tmp_info(html)
+        entries = []
+        for i in range(n):
+            base    = i * 3
+            ingress = parts[base]     if len(parts) > base     else 0
+            egress  = parts[base + 1] if len(parts) > base + 1 else 0
+            entries.append(BandwidthEntry(port=i + 1, ingress_rate=ingress, egress_rate=egress))
+        return entries
+
+    # ------------------------------------------------------------------
+    # Storm control
+    # ------------------------------------------------------------------
+
+    def get_storm_control(self) -> List[StormEntry]:
+        html  = self._page('QosStormControlRpm')
+        n     = _extract_var(html, 'portNumber') or self._port_count
+        parts = self._parse_tmp_info(html)
+        entries = []
+        for i in range(n):
+            base       = i * 3
+            kbps       = parts[base]     if len(parts) > base     else 0
+            types      = parts[base + 1] if len(parts) > base + 1 else 0
+            enabled    = kbps > 0
+            rate_index = _KBPS_TO_RATE_INDEX.get(kbps, 0) if enabled else 0
+            entries.append(StormEntry(
+                port=i + 1, enabled=enabled, rate_index=rate_index, storm_types=types))
+        return entries
+
+
+# ===========================================================================
+# Model registry and auto-detection factory
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Session-type detection
+# ---------------------------------------------------------------------------
+
+def _detect_session_type(r: requests.Response) -> str:
+    """
+    Determine session mechanism from a logon.cgi response.
+
+    Returns 'cookie'   — switch uses H_P_SSID cookie sessions (SG108E family).
+    Returns 'ip_based' — switch uses client-IP sessions, no cookie (DE family).
+    """
+    return 'cookie' if 'H_P_SSID' in r.cookies else 'ip_based'
+
+
+def _check_login_success(r: requests.Response) -> bool:
+    """
+    Return True if the logon.cgi response indicates a successful login.
+
+    Both known families embed ``logonInfo = new Array(errCode, ...)``.
+    errCode 0 = success; non-zero = failure (wrong password, session limit, etc.).
+    Falls back to True if the page format is unrecognised but the HTTP status
+    is 200, so that an unknown future model still gets a chance to work.
+    """
+    m = re.search(r'logonInfo\s*=\s*new\s+Array\s*\(\s*(\d+)', r.text)
+    if m:
+        return int(m.group(1)) == 0
+    # Unrecognised page but got a session cookie — probably OK
+    if 'H_P_SSID' in r.cookies:
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# SystemInfoRpm.htm parser — model-independent
+# ---------------------------------------------------------------------------
+
+def _parse_sysinfo_html(html: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Extract (hardware_version, firmware_version) from SystemInfoRpm.htm.
+
+    Tries every known page format in order; returns (None, None) if the
+    page cannot be parsed.  New formats should be added here as new models
+    are reverse-engineered.
+
+    Known formats
+    -------------
+    SG108E family  — JS object: ``var info_ds = {hardwareStr:['TL-SG108E 6.0'], ...}``
+    DE family      — HTML spans: ``<span id="sp_hardwareversion">TL-SG1016DE 2.0</span>``
+    """
+    # --- SG108E-style: JS object with array-wrapped values ---
+    # e.g. var info_ds = { hardwareStr:['TL-SG108E 6.0'], firmwareStr:['1.0.0 ...'], ... }
+    info = _extract_var(html, 'info_ds')
+    if isinstance(info, dict):
+        def _first(key: str) -> Optional[str]:
+            v = info.get(key)
+            if isinstance(v, list) and v:
+                return str(v[0])
+            if isinstance(v, str):
+                return v
+            return None
+        hw = _first('hardwareStr') or _first('hardware')
+        fw = _first('firmwareStr') or _first('firmware')
+        if hw:
+            return hw, fw
+
+    # --- DE-style: HTML <span> elements with named IDs ---
+    def _span(id_: str) -> Optional[str]:
+        m = re.search(rf'id="{re.escape(id_)}"[^>]*>([^<]+)<', html)
+        return m.group(1).strip() if m else None
+
+    hw = _span('sp_hardwareversion')
+    fw = _span('sp_firewareversion')   # deliberate firmware typo in DE HTML
+    if hw:
+        return hw, fw
+
+    return None, None
+
+
+# ---------------------------------------------------------------------------
+# Port-count inference from hardware version string
+# ---------------------------------------------------------------------------
+
+# Maps model prefixes (uppercase) to port count.
+# Add entries here as new models are confirmed.
+_MODEL_PORT_COUNT: Dict[str, int] = {
+    # E-series (cookie-based sessions)
+    'TL-SG105E':   5,
+    'TL-SG108E':   8,
+    'TL-SG108PE':  8,   # PoE variant — unverified
+    'TL-SG116E':  16,   # unverified
+    # DE-series (IP-based sessions)
+    'TL-SG1008DE': 8,   # unverified
+    'TL-SG1016DE': 16,
+    'TL-SG1024DE': 24,  # unverified
+}
+
+
+def _port_count_from_hardware(hardware: Optional[str]) -> Optional[int]:
+    """Return the port count for *hardware*, or None if the model is unknown."""
+    if not hardware:
+        return None
+    hw = hardware.upper()
+    for prefix, count in _MODEL_PORT_COUNT.items():
+        if hw.startswith(prefix.upper()):
+            return count
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Switch registry
+# ---------------------------------------------------------------------------
+
+# Each entry is (model_prefix, Switch_subclass).
+# Checked in order; first prefix match wins.
+# "unverified" means the protocol is assumed identical to a similar model
+# but has not been tested against a live device.
+_SWITCH_REGISTRY: List[Tuple[str, Type[Switch]]] = [
+    # --- E-series (cookie-based, SG108E protocol) ---
+    ('TL-SG105E',   Switch),     # 5-port  — unverified
+    ('TL-SG108E',   Switch),     # 8-port  — verified
+    ('TL-SG108PE',  Switch),     # 8-port PoE — unverified
+    ('TL-SG116E',   Switch),     # 16-port — unverified
+    # --- DE-series (IP-based sessions, SwitchDE protocol) ---
+    ('TL-SG1008DE', SwitchDE),   # 8-port  — unverified
+    ('TL-SG1016DE', SwitchDE),   # 16-port — verified
+    ('TL-SG1024DE', SwitchDE),   # 24-port — unverified
+]
+
+
+def _lookup_class(hardware: Optional[str], session_type: str) -> Type[Switch]:
+    """
+    Return the Switch subclass for *hardware*.
+
+    If the model string is not in the registry, falls back to a
+    session-type heuristic and emits a RuntimeWarning so the caller
+    knows to report the new model.
+    """
+    if hardware:
+        hw = hardware.upper()
+        for prefix, cls in _SWITCH_REGISTRY:
+            if hw.startswith(prefix.upper()):
+                return cls
+
+    fallback = SwitchDE if session_type == 'ip_based' else Switch
+    warnings.warn(
+        f'Unknown switch model {hardware!r} (session_type={session_type!r}); '
+        f'falling back to {fallback.__name__}. '
+        'Behaviour may be incorrect. '
+        'Please report this model at https://github.com/jfrancis42/ansible-tplink/issues.',
+        RuntimeWarning,
+        stacklevel=3,
+    )
+    return fallback
+
+
+# ---------------------------------------------------------------------------
+# Public factory
+# ---------------------------------------------------------------------------
+
+def _resolve_model_override(model: str) -> Type[Switch]:
+    """
+    Resolve a ``model`` override string to a Switch subclass.
+
+    Accepts:
+    - A hardware-version prefix from the registry  (e.g. ``'TL-SG1016DE'``)
+    - A Switch class name                          (e.g. ``'Switch'``, ``'SwitchDE'``)
+
+    Raises ValueError with a helpful message if nothing matches.
+    """
+    # Class-name shorthand
+    _BY_NAME: Dict[str, Type[Switch]] = {
+        'switch':   Switch,
+        'switchde': SwitchDE,
+    }
+    lo = model.strip().lower()
+    if lo in _BY_NAME:
+        return _BY_NAME[lo]
+
+    # Registry prefix match (case-insensitive)
+    for prefix, cls in _SWITCH_REGISTRY:
+        if lo.startswith(prefix.lower()) or prefix.lower().startswith(lo):
+            return cls
+
+    valid_models = ', '.join(p for p, _ in _SWITCH_REGISTRY)
+    raise ValueError(
+        f'Unknown model override {model!r}. '
+        f'Valid class names: Switch, SwitchDE. '
+        f'Valid model prefixes: {valid_models}.'
+    )
+
+
+def make_switch(
+    host: str,
+    username: str = 'admin',
+    password: str = 'admin',
+    timeout: float = 10.0,
+    model: Optional[str] = None,
+) -> Switch:
+    """
+    Connect to a TP-Link managed switch and return the correct Switch subclass.
+
+    Auto-detection sequence (2 HTTP requests, no redundant login):
+
+      1. POST logon.cgi  — authenticates and reveals the session mechanism
+                           (H_P_SSID cookie → SG108E family;
+                            logonInfo only   → DE family).
+      2. GET  SystemInfoRpm.htm — reads the hardware version string, which
+                           is the ground-truth discriminator for class and
+                           port count.
+
+    The returned object is already logged in.  Use as a context manager::
+
+        with make_switch('10.1.0.32', password='secret') as sw:
+            print(sw.get_system_info())
+
+    If the hardware version is not in the registry, the factory falls back
+    to a session-type heuristic and emits RuntimeWarning.
+
+    model override
+    --------------
+    If auto-detection fails or produces wrong results for a new / unusual
+    switch, pass ``model`` to bypass the registry lookup entirely::
+
+        # Force SG108E protocol for an unlisted E-series switch
+        make_switch('10.1.0.99', password='secret', model='TL-SG108E')
+
+        # Force DE protocol by class name
+        make_switch('10.1.0.99', password='secret', model='SwitchDE')
+
+    Valid values: any model prefix from _SWITCH_REGISTRY, or the class
+    names ``'Switch'`` / ``'SwitchDE'`` (case-insensitive).
+    """
+    # Resolve override early so bad values fail before any network I/O
+    override_cls: Optional[Type[Switch]] = None
+    if model is not None:
+        override_cls = _resolve_model_override(model)
+
+    probe = requests.Session()
+
+    try:
+        r = probe.post(
+            f'http://{host}/logon.cgi',
+            data={'username': username, 'password': password, 'logon': 'Login'},
+            timeout=timeout,
+        )
+        r.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f'Cannot reach {host}: {exc}') from exc
+
+    if not _check_login_success(r):
+        raise RuntimeError(
+            f'Login to {host} failed. '
+            'Check username and password. '
+            f'(logon.cgi status={r.status_code}, '
+            f'response={r.text[:120]!r})'
+        )
+
+    if override_cls is not None:
+        # Model forced by caller — skip sysinfo probe, infer port count from override
+        port_count = _port_count_from_hardware(model)
+        return override_cls._from_probe(
+            host=host, username=username, password=password, timeout=timeout,
+            session=probe, port_count=port_count,
+        )
+
+    session_type = _detect_session_type(r)
+
+    # Read hardware version — the ground-truth model discriminator
+    sysinfo_html = ''
+    try:
+        si = probe.get(f'http://{host}/SystemInfoRpm.htm', timeout=timeout)
+        si.raise_for_status()
+        sysinfo_html = si.text
+    except requests.RequestException:
+        pass   # factory still works via session-type fallback
+
+    hardware, _firmware = _parse_sysinfo_html(sysinfo_html)
+    port_count = _port_count_from_hardware(hardware)
+    cls = _lookup_class(hardware, session_type)
+
+    return cls._from_probe(
+        host=host,
+        username=username,
+        password=password,
+        timeout=timeout,
+        session=probe,
+        port_count=port_count,
+    )

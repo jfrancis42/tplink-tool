@@ -8,12 +8,19 @@ project reverse-engineers the HTTP web UI shared by many TP-Link managed
 switch models to provide a clean Python interface and a Cisco IOS-inspired
 shell.
 
-Developed and tested on:
-- Hardware: TL-SG108E v6.0
-- Firmware: 1.0.0 Build 20230218 Rel.50633
+## Verified hardware
 
-A full test suite passes against this hardware.  Other TP-Link managed
-switches that share the same web UI are likely compatible.
+The following hardware has been confirmed working end-to-end with all
+read and write operations:
+
+| Model | Hardware version | Firmware | Protocol |
+|-------|-----------------|----------|----------|
+| TL-SG108E | v6.0 | 1.0.0 Build 20230218 Rel.50633 | Cookie-based (`Switch`) |
+| TL-SG1016DE | v2.0 | 1.0.1 Build 20151218 Rel.58739 | IP-based (`SwitchDE`) |
+
+Other TP-Link Easy Smart and DE-series models with the same web UI are
+expected to work.  See the model override section below if autodetection
+fails on an untested model.
 
 ## Installation
 
@@ -52,10 +59,13 @@ No other dependencies beyond `requests` (installed automatically).
 
 ## Quick start — SDK
 
-```python
-from tplink_tool import Switch, PortSpeed
+Use `make_switch()` as the primary entry point.  It auto-detects the
+switch model and returns the correct subclass:
 
-with Switch('192.168.0.1', password='admin') as sw:
+```python
+from tplink_tool import make_switch, PortSpeed
+
+with make_switch('192.168.0.1', password='admin') as sw:
     # Read system info
     print(sw.get_system_info())
 
@@ -70,6 +80,31 @@ with Switch('192.168.0.1', password='admin') as sw:
     sw.set_dot1q_enabled(True)
     sw.add_dot1q_vlan(10, name='servers', tagged_ports=[8], untagged_ports=[1])
     sw.set_pvid([1], 10)
+```
+
+### Model override
+
+If autodetection fails (unsupported or misidentified hardware), pass
+the `model` argument to force a specific class or model prefix:
+
+```python
+# Force by hardware model prefix (from the support table above)
+with make_switch('192.168.0.1', password='admin', model='TL-SG1016DE') as sw:
+    ...
+
+# Force by class name
+with make_switch('192.168.0.1', password='admin', model='SwitchDE') as sw:
+    ...
+
+with make_switch('192.168.0.1', password='admin', model='Switch') as sw:
+    ...
+```
+
+You can also import and instantiate the classes directly if you need
+low-level control:
+
+```python
+from tplink_tool import Switch, SwitchDE, PortSpeed
 ```
 
 See [docs/sdk.md](docs/sdk.md) for the full API reference.
@@ -155,15 +190,26 @@ issue.
 
 ## Protocol notes
 
-The switch uses a frameset-based HTTP UI on port 80.
+TP-Link Easy Smart switches use a frameset-based HTTP UI on port 80.
+Two protocol variants are supported:
+
+### Cookie-based protocol (TL-SG1xx Easy Smart series — `Switch` class)
 
 - **Reads**: `GET /<Page>.htm` — state is embedded as JavaScript variable
   declarations in the first `<script>` block.
-- **Writes**: `GET /<name>.cgi?param=value` — all configuration writes are
-  GET requests with query-string parameters (not POST).
-- **Session**: cookie-based (`H_P_SSID`, TTL 600 s).  The SDK re-authenticates
-  transparently before expiry and after mode-change operations that restart
-  the switch's web server.
+- **Writes**: most are `GET /<name>.cgi?param=value`; a few use POST.
+- **Session**: cookie-based (`H_P_SSID`, TTL 600 s).  The SDK
+  re-authenticates transparently before expiry and after mode-change
+  operations that restart the switch's web server.
+
+### IP-based protocol (TL-SG1xxDE DE-series — `SwitchDE` class)
+
+- Same HTML/CGI structure, but the session is tracked server-side by the
+  client IP address rather than a cookie.
+- The switch allows only one admin session at a time; a second login from
+  a different IP forces the existing session off.
+- VLAN 1 membership is immutable on TL-SG1016DE firmware — the firmware
+  always reports all ports as VLAN 1 members and ignores write attempts.
 
 ## License
 
