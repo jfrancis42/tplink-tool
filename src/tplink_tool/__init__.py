@@ -694,6 +694,16 @@ class Switch:
             pass
         self._logged_in = False
 
+    def save_config(self):
+        """
+        Save running configuration to flash.
+
+        TL-SG108E (firmware 1.0.0 Build 20230218 and later) persists every
+        write to flash automatically — no explicit save step is needed.  This
+        method is a documented no-op for that model so callers can use a
+        uniform API across both switch families.
+        """
+
     def backup_config(self) -> bytes:
         """Download the current configuration as raw bytes."""
         return self._get('config_back.cgi').content
@@ -1680,6 +1690,17 @@ class SwitchDE(Switch):
             entries.append(StormEntry(
                 port=i + 1, enabled=enabled, rate_index=rate_index, storm_types=types))
         return entries
+
+    def save_config(self):
+        """
+        Save running configuration to flash.
+
+        TL-SG1016DE firmware requires an explicit save step — configuration
+        changes written via CGI survive only until the next power cycle unless
+        this method is called.  Submits the same POST that the browser's
+        "Save Config" button sends.
+        """
+        self._cfg_post('savingconfig.cgi', {'action_op': 'save'})
 
 
 # ===========================================================================

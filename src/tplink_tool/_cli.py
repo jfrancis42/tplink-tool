@@ -1143,22 +1143,26 @@ class SwitchCLI(cmd.Cmd):
     # ------------------------------------------------------------------
 
     def do_write(self, args):
-        """write erase  — factory reset the switch"""
+        """write memory | write erase — save config to flash, or factory reset"""
         if not self._require('exec'):
             return
-        if not args.strip().lower().startswith('er'):
-            print('  Usage: write erase')
-            return
-        ans = input('  Factory reset? ALL configuration will be lost. [y/N] ').strip().lower()
-        if ans == 'y':
-            self.sw.factory_reset()
-            print('  Factory reset initiated. Switch is rebooting...')
-            return True
+        sub = args.strip().lower()
+        if sub.startswith('m'):
+            self.sw.save_config()
+            print('  Configuration saved.')
+        elif sub.startswith('er'):
+            ans = input('  Factory reset? ALL configuration will be lost. [y/N] ').strip().lower()
+            if ans == 'y':
+                self.sw.factory_reset()
+                print('  Factory reset initiated. Switch is rebooting...')
+                return True
+            else:
+                print('  Cancelled')
         else:
-            print('  Cancelled')
+            print('  Usage: write memory | write erase')
 
     def complete_write(self, text, *_):
-        return [s for s in ('erase',) if s.startswith(text)]
+        return [s for s in ('memory', 'erase') if s.startswith(text)]
 
     # ------------------------------------------------------------------
     # show
@@ -1498,6 +1502,7 @@ class SwitchCLI(cmd.Cmd):
                 ('copy <file> running-config', 'Restore config from file'),
                 ('configure terminal',       'Enter configuration mode'),
                 ('reload',                   'Reboot the switch'),
+                ('write memory',             'Save running config to flash'),
                 ('write erase',              'Factory reset'),
                 ('exit / quit',              'Disconnect'),
             ],

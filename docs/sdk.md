@@ -12,6 +12,7 @@ not been tested.
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Session management](#session-management)
+- [Saving configuration](#saving-configuration)
 - [Data types](#data-types)
 - [API reference](#api-reference)
   - [System](#system)
@@ -61,6 +62,9 @@ with Switch('192.168.0.1', password='admin') as sw:
     # Enable a port and set speed
     sw.set_ports([1], enabled=True, speed=PortSpeed.AUTO)
 
+    # IMPORTANT: save to flash so changes survive a power cycle
+    sw.save_config()
+
     # Print TX/RX counters
     for s in sw.get_port_statistics():
         print(f'Port {s.port}: TX={s.tx_pkts}  RX={s.rx_pkts}')
@@ -93,6 +97,41 @@ sw.logout()
 # Custom timeout (seconds)
 sw = Switch('192.168.0.1', password='secret', timeout=30.0)
 ```
+
+---
+
+## Saving configuration
+
+Flash-write behaviour depends on the switch model:
+
+| Model | Behaviour |
+|-------|-----------|
+| TL-SG108E (and similar Easy Smart series) | **Auto-saves** every write to flash immediately.  No explicit save step needed.  The web UI has no "Save Config" button. |
+| TL-SG1016DE (and similar DE series) | **Does not auto-save.**  Changes live in RAM only until `save_config()` is called.  The web UI has a "Save Config" button. |
+
+`save_config()` provides a **uniform API across both families**: on
+TL-SG108E it is a documented no-op; on TL-SG1016DE it POSTs to
+`savingconfig.cgi` (the same request the browser's Save Config button
+sends) and waits for the firmware's `"Operation successful."` confirmation.
+
+Always safe to call regardless of model:
+
+```python
+with make_switch('192.168.0.1', password='admin') as sw:
+    sw.set_igmp_snooping(True)
+    sw.set_loop_prevention(True)
+    sw.add_dot1q_vlan(10, name='mgmt', tagged_ports=[8], untagged_ports=[1])
+    sw.set_pvid([1], 10)
+    sw.save_config()   # no-op on SG108E; writes flash on SG1016DE
+```
+
+**When not to call `save_config()`:**
+- After `reboot()` or `factory_reset()` — the switch takes itself offline.
+- After `restore_config()` — the restored image is already the saved state.
+- After read-only operations.
+
+The Ansible collection calls `save_config()` automatically after every
+write task; no extra step is needed when using the collection.
 
 ---
 
@@ -571,6 +610,19 @@ results = sw.run_cable_diagnostic([3])
 
 ### Maintenance
 
+#### `save_config()`
+
+Flush running configuration to flash.  Safe to call on any supported
+model — on TL-SG108E this is a no-op (writes auto-persist); on
+TL-SG1016DE it performs the actual flash write.  See
+[Saving configuration](#saving-configuration) for details.
+
+```python
+sw.set_igmp_snooping(True)
+sw.set_loop_prevention(True)
+sw.save_config()   # no-op on SG108E; writes flash on SG1016DE
+```
+
 #### `reboot()`
 
 ```python
@@ -644,9 +696,9 @@ _ports_to_bits([1, 2, 3])   # 0x07 = 7
 
 Most network errors propagate as `requests.exceptions.RequestException`
 subclasses.  **Exception:** certain write operations (QoS mode, bandwidth
-control, storm control) cause the switch to drop the TCP connection after
-responding; the SDK catches `ConnectionError` in those cases, marks the
-session expired, and returns silently rather than raising.
+control, and storm control) cause the switch to drop the TCP connection
+after responding; the SDK catches `ConnectionError` in those cases, marks
+the session expired, and returns silently rather than raising.
 
 Authentication failures raise `RuntimeError` with a descriptive
 message including the firmware's `errType` code:

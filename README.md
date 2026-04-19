@@ -80,6 +80,9 @@ with make_switch('192.168.0.1', password='admin') as sw:
     sw.set_dot1q_enabled(True)
     sw.add_dot1q_vlan(10, name='servers', tagged_ports=[8], untagged_ports=[1])
     sw.set_pvid([1], 10)
+
+    # Persist to flash (no-op on SG108E which auto-saves; required on SG1016DE)
+    sw.save_config()
 ```
 
 ### Model override
@@ -127,6 +130,7 @@ TL-SG108E(config-if-gi1)# switchport access vlan 10
 TL-SG108E(config-if-gi1)# exit
 TL-SG108E(config)# end
 TL-SG108E# show vlan
+TL-SG108E# write memory
 ```
 
 Commands can be abbreviated to their shortest unambiguous prefix (`conf t`,
@@ -157,9 +161,17 @@ See [docs/cli.md](docs/cli.md) for the full command reference.
 ### Write operations
 Everything listed above, plus:
 - Config backup and restore
+- Save running config to flash (`save_config()`)
 - Factory reset
 - Reboot
 - Password change
+
+> **Note:** Flash-write behaviour is model-specific.  TL-SG108E
+> auto-saves every write to flash; no explicit save is needed.  TL-SG1016DE
+> does not auto-save — call `sw.save_config()` after write operations, or
+> use `write memory` in the CLI.  The Ansible collection calls
+> `save_config()` automatically after every write task, so no extra step is
+> needed there.
 
 ## Known firmware issues
 

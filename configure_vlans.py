@@ -55,7 +55,9 @@ def configure(sw: Switch):
         print(f'  Setting port {access_port} PVID → {vid}')
         sw.set_pvid([access_port], vid)
 
-    print('Configuration applied.')
+    print('Saving configuration to flash...')
+    sw.save_config()   # no-op on SG108E (auto-saves); writes flash on SG1016DE
+    print('Configuration applied and saved.')
 
 
 def verify(sw: Switch) -> bool:

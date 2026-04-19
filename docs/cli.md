@@ -69,6 +69,10 @@ exec                          ← login lands here
 | `end` | Return directly to exec mode |
 | `do <command>` | Run any exec-mode command from config/if/vlan mode |
 
+> **Save your work:** The switch does not auto-save configuration changes.
+> After any configuration session, run `write memory` from exec mode to
+> persist changes to flash.  Changes not saved are lost on power cycle.
+
 ---
 
 ## Abbreviations
@@ -273,6 +277,16 @@ TL-SG108E# copy backup.bin running-config
 TL-SG108E# reload
   Proceed with reload? [y/N] y
   Reloading...
+```
+
+### write memory — save config to flash
+
+Persist the running configuration to flash so changes survive a power cycle.
+Run this after any configuration session.
+
+```
+TL-SG108E# write memory
+  Configuration saved.
 ```
 
 ### write erase — factory reset
@@ -522,6 +536,7 @@ interface port 8
 end
 
 show vlan
+write memory
 ```
 
 ### Add a new access port to an existing trunk
@@ -540,6 +555,7 @@ interface port 8
  exit
 end
 show vlan
+write memory
 ```
 
 ### Rate-limit a port
@@ -551,6 +567,7 @@ interface port 3
  bandwidth egress 512
 end
 show qos bandwidth
+write memory
 ```
 
 ### Mirror a port for capture
@@ -561,6 +578,7 @@ monitor session 1 destination interface gi8
 monitor session 1 source interface gi1 both
 end
 show port-mirror
+write memory
 ```
 
 ### Set up storm control on all access ports
@@ -571,6 +589,7 @@ interface range port 1-7
  storm-control all rate 5
 end
 show qos storm
+write memory
 ```
 
 ### Back up and restore configuration
