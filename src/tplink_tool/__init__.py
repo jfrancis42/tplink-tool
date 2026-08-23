@@ -9,10 +9,11 @@ Model support
 -------------
 Verified:
   TL-SG108E  (E-series, cookie sessions)     → Switch
+  TL-SG108PE (E-series, cookie sessions)     → Switch + PoE
   TL-SG1016DE (DE-series, IP-based sessions) → SwitchDE
 
 Unverified (assumed compatible, same protocol family):
-  TL-SG105E, TL-SG108PE, TL-SG116E          → Switch
+  TL-SG105E, TL-SG116E                      → Switch
   TL-SG1008DE, TL-SG1024DE                  → SwitchDE
 
 Protocol
@@ -236,6 +237,38 @@ class CableDiagResult:
     port: int
     status: str    # 'OK', 'Open', 'Short', 'Unknown'
     length_m: int  # -1 = not available
+
+
+@dataclass
+class PoERecoveryPort:
+    """PoE auto-recovery settings and counters for one PoE-capable port."""
+
+    port: int
+    enabled: bool
+    ping_ip: str
+    startup_delay: int
+    interval: int
+    failure_threshold: int
+    break_time: int
+    failures: int
+    reboots: int
+    total_pings: int
+
+
+@dataclass
+class PoERecoveryConfig:
+    """Global PoE auto-recovery state and per-port settings."""
+
+    enabled: bool
+    ports: List[PoERecoveryPort]
+
+
+@dataclass
+class PoEExtendPort:
+    """PoE Extend Mode state for one PoE-capable port."""
+
+    port: int
+    enabled: bool
 
 
 # ---------------------------------------------------------------------------
@@ -1239,6 +1272,121 @@ class Switch:
         self._cfg_post('qos_storm_set.cgi', params)
 
     # ==================================================================
+    # PoE
+    # ==================================================================
+
+    def get_poe_recovery(self) -> PoERecoveryConfig:
+        """Return PoE Auto Recovery state, settings, and counters.
+
+        The PoE Easy Smart pages expose recovery configuration and counters,
+        but not live voltage, current, wattage, or powered-device detection.
+        The number of returned ports is read from the switch page so this
+        also works for PoE models with a different port count.
+        """
+        html = self._page('PoeRecoveryRpm')
+        n = _extract_var(html, 'poe_port_num') or 0
+        global_config = _extract_var(html, 'globalRecoveryConfig')
+        port_config = _extract_var(html, 'portRecoveryConfig')
+        if not isinstance(global_config, dict) or not isinstance(port_config, dict):
+            raise RuntimeError('Could not parse PoeRecoveryRpm.htm')
+
+        def value(name: str, index: int, default: Any) -> Any:
+            values = port_config.get(name, [])
+            return values[index] if isinstance(values, list) and index < len(values) else default
+
+        ports = []
+        for i in range(n):
+            ports.append(PoERecoveryPort(
+                port=i + 1,
+                enabled=bool(value('status', i, 0)),
+                ping_ip=str(value('ip', i, '')),
+                startup_delay=int(value('startup', i, 0)),
+                interval=int(value('interval', i, 0)),
+                failure_threshold=int(value('retry', i, 0)),
+                break_time=int(value('reboot', i, 0)),
+                failures=int(value('failure', i, 0)),
+                reboots=int(value('restart', i, 0)),
+                total_pings=int(value('total', i, 0)),
+            ))
+        return PoERecoveryConfig(
+            enabled=bool(global_config.get('global_status', 0)),
+            ports=ports,
+        )
+
+    def set_poe_recovery_global(self, enabled: bool):
+        """Enable or disable PoE Auto Recovery globally."""
+        self._cfg_post('poe_recovery_global_config.cgi', {
+            'name_globalStatus': '1' if enabled else '0',
+            'poe_auto_recovery_global_config': 'Apply',
+        })
+
+    def set_poe_recovery(
+        self,
+        ports: List[int],
+        enabled: Optional[bool] = None,
+        ping_ip: Optional[str] = None,
+        startup_delay: Optional[int] = None,
+        interval: Optional[int] = None,
+        failure_threshold: Optional[int] = None,
+        break_time: Optional[int] = None,
+    ):
+        """Configure PoE Auto Recovery on one or more PoE ports.
+
+        Parameters left as ``None`` retain the values currently configured
+        on the first selected port.  The firmware applies one shared form
+        value to every selected port, matching the web UI behaviour.
+        """
+        if not ports:
+            raise ValueError('at least one PoE port is required')
+
+        current = {p.port: p for p in self.get_poe_recovery().ports}
+        missing = [p for p in ports if p not in current]
+        if missing:
+            raise ValueError(f'unsupported PoE port(s): {missing}')
+        first = current[ports[0]]
+        params = {
+            'name_pStatus': '2' if (enabled if enabled is not None else first.enabled) else '1',
+            'name_pIp': ping_ip if ping_ip is not None else first.ping_ip,
+            'name_pStartup': str(startup_delay if startup_delay is not None else first.startup_delay),
+            'name_pInterval': str(interval if interval is not None else first.interval),
+            'name_pRetry': str(failure_threshold if failure_threshold is not None else first.failure_threshold),
+            'name_pBreak': str(break_time if break_time is not None else first.break_time),
+            'applay': 'Apply',  # firmware spelling
+        }
+        for port in ports:
+            params[f'sel_{port}'] = '1'
+        self._cfg_post('poe_recovery_port_config.cgi', params)
+
+    def get_poe_extend_mode(self) -> List[PoEExtendPort]:
+        """Return PoE Extend Mode state for each PoE-capable port."""
+        html = self._page('poeExtendRpm')
+        n = _extract_var(html, 'poe_port_num') or 0
+        config = _extract_var(html, 'poeExtendConfig')
+        if not isinstance(config, dict):
+            raise RuntimeError('Could not parse poeExtendRpm.htm')
+        statuses = config.get('status', [])
+        return [PoEExtendPort(
+            port=i + 1,
+            enabled=bool(statuses[i]) if isinstance(statuses, list) and i < len(statuses) else False,
+        ) for i in range(n)]
+
+    def set_poe_extend_mode(self, ports: List[int], enabled: bool):
+        """Enable or disable PoE Extend Mode on one or more ports."""
+        if not ports:
+            raise ValueError('at least one PoE port is required')
+        supported = {p.port for p in self.get_poe_extend_mode()}
+        missing = [p for p in ports if p not in supported]
+        if missing:
+            raise ValueError(f'unsupported PoE port(s): {missing}')
+        params = {
+            'name_pStatus': '2' if enabled else '1',
+            'apply': 'Apply',
+        }
+        for port in ports:
+            params[f'sel_{port}'] = '1'
+        self._cfg_post('poe_extend_port_config.cgi', params)
+
+    # ==================================================================
     # Cable diagnostics
     # ==================================================================
 
@@ -1795,7 +1943,7 @@ _MODEL_PORT_COUNT: Dict[str, int] = {
     # E-series (cookie-based sessions)
     'TL-SG105E':   5,
     'TL-SG108E':   8,
-    'TL-SG108PE':  8,   # PoE variant — unverified
+    'TL-SG108PE':  8,   # 8-port PoE variant
     'TL-SG116E':  16,   # unverified
     # DE-series (IP-based sessions)
     'TL-SG1008DE': 8,   # unverified
@@ -1827,7 +1975,7 @@ _SWITCH_REGISTRY: List[Tuple[str, Type[Switch]]] = [
     # --- E-series (cookie-based, SG108E protocol) ---
     ('TL-SG105E',   Switch),     # 5-port  — unverified
     ('TL-SG108E',   Switch),     # 8-port  — verified
-    ('TL-SG108PE',  Switch),     # 8-port PoE — unverified
+    ('TL-SG108PE',  Switch),     # 8-port PoE — cookie session
     ('TL-SG116E',   Switch),     # 16-port — unverified
     # --- DE-series (IP-based sessions, SwitchDE protocol) ---
     ('TL-SG1008DE', SwitchDE),   # 8-port  — unverified

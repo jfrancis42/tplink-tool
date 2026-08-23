@@ -28,6 +28,7 @@ not been tested.
   - [QoS](#qos)
   - [Bandwidth control](#bandwidth-control)
   - [Storm control](#storm-control)
+  - [PoE](#poe)
   - [Cable diagnostics](#cable-diagnostics)
   - [Maintenance](#maintenance)
 - [Helper functions](#helper-functions)
@@ -177,6 +178,9 @@ class StormType(IntEnum):
 | `BandwidthEntry` | `port`, `ingress_rate` (kbps), `egress_rate` (kbps) |
 | `StormEntry` | `port`, `enabled`, `rate_index`, `storm_types` (bitmask) |
 | `CableDiagResult` | `port`, `status` ('OK'/'Open'/'Short'/'Unknown'), `length_m` |
+| `PoERecoveryPort` | `port`, `enabled`, `ping_ip`, recovery timers, failure/reboot counters |
+| `PoERecoveryConfig` | `enabled`, `ports: List[PoERecoveryPort]` |
+| `PoEExtendPort` | `port`, `enabled` |
 
 ---
 
@@ -584,6 +588,56 @@ sw.set_storm_control(list(range(1, 9)), rate_index=1,
 
 # Disable storm control on port 1
 sw.set_storm_control([1], rate_index=0, storm_types=[])
+```
+
+---
+
+### PoE
+
+The PoE pages available on Easy Smart PoE firmware expose Auto Recovery and
+Extend Mode. They do not expose live voltage, current, wattage, or powered-
+device detection.
+
+#### `get_poe_recovery() → PoERecoveryConfig`
+
+```python
+recovery = sw.get_poe_recovery()
+print(recovery.enabled)
+for port in recovery.ports:
+    print(port.port, port.enabled, port.failures, port.reboots)
+```
+
+#### `set_poe_recovery_global(enabled)`
+
+```python
+sw.set_poe_recovery_global(False)
+```
+
+#### `set_poe_recovery(ports, enabled=None, ping_ip=None, startup_delay=None, interval=None, failure_threshold=None, break_time=None)`
+
+Configure one or more PoE ports. Values left as `None` are retained from the
+first selected port, matching the web UI's shared form values.
+
+```python
+sw.set_poe_recovery(
+    [1], enabled=True, ping_ip='10.0.0.50',
+    startup_delay=60, interval=60, failure_threshold=5, break_time=15,
+)
+```
+
+#### `get_poe_extend_mode() → List[PoEExtendPort]`
+
+```python
+for port in sw.get_poe_extend_mode():
+    print(port.port, port.enabled)
+```
+
+#### `set_poe_extend_mode(ports, enabled)`
+
+Extend Mode increases the cable distance limit but limits the port to 10 Mbps.
+
+```python
+sw.set_poe_extend_mode([1, 2], True)
 ```
 
 ---

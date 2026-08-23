@@ -162,6 +162,23 @@ TL-SG108E# show qos bandwidth ← bandwidth limits only
 TL-SG108E# show qos storm     ← storm control only
 ```
 
+### show poe
+
+Displays PoE Auto Recovery settings and counters together with PoE Extend
+Mode for each PoE-capable port.
+
+```text
+TL-SG108PE# show poe
+
+  PoE Auto Recovery: disabled
+
+  Port    Recovery    Ping IP           Startup  Interval  Threshold   Break  Failures  Reboots    Pings  Extend
+  gi1     disabled    --                      60        60          5      15         0        0        0  disabled
+```
+
+The firmware pages used by this command do not expose live voltage, current,
+wattage, or powered-device detection.
+
 ### show spanning-tree
 
 ```

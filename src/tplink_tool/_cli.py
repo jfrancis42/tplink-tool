@@ -1176,6 +1176,7 @@ class SwitchCLI(cmd.Cmd):
         show ip
         show running-config
         show qos [bandwidth | storm-control]
+        show poe
         show spanning-tree
         show port-mirror
         show etherchannel
@@ -1192,6 +1193,7 @@ class SwitchCLI(cmd.Cmd):
             'ip':             lambda: self._show_ip(parts[1:]),
             'running-config': lambda: self._show_running_config(),
             'qos':            lambda: self._show_qos(parts[1:]),
+            'poe':            lambda: self._show_poe(),
             'spanning-tree':  lambda: self._show_spanning_tree(),
             'port-mirror':    lambda: self._show_port_mirror(),
             'etherchannel':   lambda: self._show_etherchannel(),
@@ -1212,7 +1214,7 @@ class SwitchCLI(cmd.Cmd):
 
     def complete_show(self, text, *_):
         subs = ['version', 'interfaces', 'vlan', 'ip', 'running-config',
-                'qos', 'spanning-tree', 'port-mirror', 'etherchannel',
+                'qos', 'poe', 'spanning-tree', 'port-mirror', 'etherchannel',
                 'mtu-vlan', 'cable-diag']
         return [s for s in subs if s.startswith(text)]
 
@@ -1419,6 +1421,29 @@ class SwitchCLI(cmd.Cmd):
                 else:
                     print(f'  gi{s.port:<4}  {"no":<8}  --')
             print()
+
+    # ---- show poe ----
+
+    def _show_poe(self):
+        recovery = self.sw.get_poe_recovery()
+        extend = {p.port: p.enabled for p in self.sw.get_poe_extend_mode()}
+        print(f'\n  PoE Auto Recovery: '
+              f'{"enabled" if recovery.enabled else "disabled"}')
+        print(f'\n  {"Port":<6}  {"Recovery":<10}  {"Ping IP":<16}  '
+              f'{"Startup":>7}  {"Interval":>8}  {"Threshold":>9}  '
+              f'{"Break":>6}  {"Failures":>8}  {"Reboots":>7}  '
+              f'{"Pings":>7}  Extend')
+        print('  ' + '-' * 112)
+        for port in recovery.ports:
+            print(f'  gi{port.port:<4}  '
+                  f'{"enabled" if port.enabled else "disabled":<10}  '
+                  f'{port.ping_ip or "--":<16}  '
+                  f'{port.startup_delay:>7}  {port.interval:>8}  '
+                  f'{port.failure_threshold:>9}  {port.break_time:>6}  '
+                  f'{port.failures:>8}  {port.reboots:>7}  '
+                  f'{port.total_pings:>7}  '
+                  f'{"enabled" if extend.get(port.port, False) else "disabled"}')
+        print()
 
     # ---- show spanning-tree ----
 

@@ -15,7 +15,7 @@ from tplink_switch import (
     Switch, SystemInfo, IPSettings, PortInfo, PortStats, MirrorConfig,
     TrunkConfig, IGMPConfig, MTUVlanConfig, PortVlanEntry, Dot1QVlanEntry,
     QoSMode, QoSPortConfig, BandwidthEntry, StormEntry, StormType,
-    PortSpeed, CableDiagResult,
+    PortSpeed, CableDiagResult, PoERecoveryConfig, PoEExtendPort,
 )
 
 
@@ -163,6 +163,22 @@ CABLE_DIAG_HTML = script(
     "var maxPort = 8;\n"
     "var cablestate = [0,1,2,3,0,0,0,0];\n"
     "var cablelength = [15,-1,-1,-1,-1,-1,-1,-1];"
+)
+
+POE_RECOVERY_HTML = script(
+    "var poe_port_num = 4;\n"
+    "var globalRecoveryConfig = {global_status:1};\n"
+    "var portRecoveryConfig = {"
+    "ip:['10.1.1.10','','10.1.1.12',''],"
+    "startup:[60,60,90,60], interval:[60,60,30,60],"
+    "retry:[5,5,3,5], reboot:[15,15,10,15],"
+    "failure:[2,0,1,0], restart:[1,0,4,0], total:[20,0,50,0],"
+    "status:[1,0,1,0]};"
+)
+
+POE_EXTEND_HTML = script(
+    "var poe_port_num = 4;\n"
+    "var poeExtendConfig = {status:[0,1,0,1]};"
 )
 
 
@@ -1054,6 +1070,82 @@ class TestStormControl:
         sw.set_storm_control([1], rate_index=3)
         url = sw._session.post.call_args.args[0]
         assert 'qos_storm_set.cgi' in url
+
+
+# ---------------------------------------------------------------------------
+# PoE
+# ---------------------------------------------------------------------------
+
+class TestPoeRecovery:
+    def test_get_recovery_config(self, sw):
+        sw._session.get.return_value = make_response(POE_RECOVERY_HTML)
+        config = sw.get_poe_recovery()
+        assert isinstance(config, PoERecoveryConfig)
+        assert config.enabled is True
+        assert len(config.ports) == 4
+        assert config.ports[0].enabled is True
+        assert config.ports[0].ping_ip == '10.1.1.10'
+        assert config.ports[0].failure_threshold == 5
+        assert config.ports[0].failures == 2
+        assert config.ports[2].break_time == 10
+        assert config.ports[3].enabled is False
+
+    def test_parse_failure_when_page_has_no_poe_state(self, sw):
+        sw._session.get.return_value = make_response('<html></html>')
+        with pytest.raises(RuntimeError, match='PoeRecoveryRpm'):
+            sw.get_poe_recovery()
+
+    def test_set_global_recovery(self, sw):
+        sw._session.post.return_value = make_response('')
+        sw.set_poe_recovery_global(False)
+        url = sw._session.post.call_args.args[0]
+        params = sw._session.post.call_args.kwargs['data']
+        assert 'poe_recovery_global_config.cgi' in url
+        assert params['name_globalStatus'] == '0'
+        assert params['poe_auto_recovery_global_config'] == 'Apply'
+
+    def test_set_port_recovery_preserves_unspecified_values(self, sw):
+        sw._session.get.return_value = make_response(POE_RECOVERY_HTML)
+        sw._session.post.return_value = make_response('')
+        sw.set_poe_recovery([1, 2], enabled=False)
+        params = sw._session.post.call_args.kwargs['data']
+        assert params['name_pStatus'] == '1'
+        assert params['name_pIp'] == '10.1.1.10'
+        assert params['name_pStartup'] == '60'
+        assert params['name_pInterval'] == '60'
+        assert params['name_pRetry'] == '5'
+        assert params['name_pBreak'] == '15'
+        assert params['sel_1'] == '1'
+        assert params['sel_2'] == '1'
+        assert params['applay'] == 'Apply'
+
+    def test_set_port_recovery_requires_ports(self, sw):
+        with pytest.raises(ValueError, match='at least one'):
+            sw.set_poe_recovery([])
+
+
+class TestPoeExtendMode:
+    def test_get_extend_mode(self, sw):
+        sw._session.get.return_value = make_response(POE_EXTEND_HTML)
+        ports = sw.get_poe_extend_mode()
+        assert len(ports) == 4
+        assert all(isinstance(port, PoEExtendPort) for port in ports)
+        assert [port.enabled for port in ports] == [False, True, False, True]
+
+    def test_set_extend_mode(self, sw):
+        sw._session.get.return_value = make_response(POE_EXTEND_HTML)
+        sw._session.post.return_value = make_response('')
+        sw.set_poe_extend_mode([1, 3], True)
+        params = sw._session.post.call_args.kwargs['data']
+        assert params['name_pStatus'] == '2'
+        assert params['apply'] == 'Apply'
+        assert params['sel_1'] == '1'
+        assert params['sel_3'] == '1'
+
+    def test_set_extend_mode_rejects_non_poe_port(self, sw):
+        sw._session.get.return_value = make_response(POE_EXTEND_HTML)
+        with pytest.raises(ValueError, match='unsupported'):
+            sw.set_poe_extend_mode([5], True)
 
 
 # ---------------------------------------------------------------------------
