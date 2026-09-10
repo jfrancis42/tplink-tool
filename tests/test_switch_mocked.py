@@ -70,10 +70,36 @@ PORT_SETTINGS_HTML = script(
     "};"
 )
 
+# FOUR values per port -- TxGood, TxBad, RxGood, RxBad -- not two. Confirmed
+# against a live TL-SG108E on 2026-09-10: ports 1-5 and 7 were down and read
+# all zeros, while port 6 read 2,751,609 / 0 / 699,079 / 0 and port 8 read
+# 1,171,221 / 0 / 2,512,188 / 14,086. Under the old stride-of-2 reading every
+# port reported tx=0 rx=0 and those 14,086 receive errors were invisible.
 PORT_STATS_HTML = script(
     "var max_port_num = 8;\n"
-    "var all_info = {pkts:[100,200,300,400,500,600,700,800,"
-    "900,1000,1100,1200,1300,1400,1500,1600]};"
+    "var all_info = {pkts:["
+    "100,1,200,2, 300,3,400,4, 500,5,600,6, 700,7,800,8, "
+    "900,9,1000,10, 1100,11,1200,12, 1300,13,1400,14, 1500,15,1600,16]};"
+)
+
+# The 16-port models (TL-SG1016DE) emit no `all_info` object at all: one flat
+# space-separated string of SIX values per port -- state, link_status, then
+# the same four counters -- which the page itself splits. Captured live.
+PORT_STATS_16_HTML = script(
+    "var max_port_num = 16;\n"
+    'var tmp_info = "' +
+    " ".join(" ".join(str(v) for v in (1, 6, p * 1000, p, p * 100, 0))
+             for p in range(1, 17)) +
+    '";\n'
+    "var all_info = tmp_info.split(\" \");"
+)
+
+PORT_SETTING_16_HTML = script(
+    "var max_port_num = 16;\n"
+    'var tmp_info = "' +
+    " ".join("0 1 1 %d 0 0" % spd for spd in
+             (6, 6, 6, 0, 5, 3, 0, 6, 4, 5, 0, 6, 6, 6, 6, 6)) +
+    '";'
 )
 
 PORT_MIRROR_HTML = script(
@@ -434,6 +460,28 @@ class TestLed:
 # ---------------------------------------------------------------------------
 
 class TestGetPortSettings:
+    def test_16_port_flat_encoding(self):
+        """TL-SG1016DE emits no all_info on PortSettingRpm at all.
+
+        It raised "Could not parse PortSettingRpm.htm" for every 16-port
+        switch, which reads like a firmware or auth fault rather than a
+        different page layout. Decoded from a live TL-SG1016DE and checked
+        against three ports whose real speed was independently known: port 9
+        100Half (a half-duplex SIP adapter), port 10 100Full, port 6 10Full.
+        """
+        from tplink_tool import Switch
+        sw = Switch('10.0.0.1', password='x')
+        sw._session = MagicMock()
+        sw._logged_in = True
+        sw._session.get.return_value = make_response(PORT_SETTING_16_HTML)
+        ports = sw.get_port_settings()
+        assert len(ports) == 16
+        assert str(ports[8].speed_act) == '100M-Half'    # port 9
+        assert str(ports[9].speed_act) == '100M-Full'    # port 10
+        assert str(ports[5].speed_act) == '10M-Full'     # port 6
+        assert ports[3].speed_act is None or 'Down' in str(ports[3].speed_act)
+        assert all(p.enabled for p in ports)
+
     def test_returns_8_ports(self, sw):
         sw._session.get.return_value = make_response(PORT_SETTINGS_HTML)
         ports = sw.get_port_settings()
@@ -530,11 +578,29 @@ class TestGetPortStatistics:
     def test_tx_rx_values(self, sw):
         sw._session.get.return_value = make_response(PORT_STATS_HTML)
         stats = sw.get_port_statistics()
-        # pkts = [100,200,300,400,...] → port1: tx=100, rx=200
-        assert stats[0].tx_pkts == 100
-        assert stats[0].rx_pkts == 200
-        assert stats[1].tx_pkts == 300
-        assert stats[1].rx_pkts == 400
+        # Four per port: TxGood, TxBad, RxGood, RxBad.
+        assert (stats[0].tx_pkts, stats[0].tx_errs) == (100, 1)
+        assert (stats[0].rx_pkts, stats[0].rx_errs) == (200, 2)
+        assert (stats[1].tx_pkts, stats[1].tx_errs) == (300, 3)
+        assert (stats[1].rx_pkts, stats[1].rx_errs) == (400, 4)
+
+    def test_error_counters_are_not_silently_dropped(self, sw):
+        """A port passing traffic with errors must report them.
+
+        desk-switch port 8 had 14,086 receive errors that no caller could see,
+        because the parser read the counters with the wrong stride.
+        """
+        sw._session.get.return_value = make_response(PORT_STATS_HTML)
+        stats = sw.get_port_statistics()
+        assert any(s.tx_errs or s.rx_errs for s in stats)
+
+    def test_16_port_flat_encoding(self, sw):
+        """TL-SG1016DE has no all_info object; it has a flat tmp_info string."""
+        sw._session.get.return_value = make_response(PORT_STATS_16_HTML)
+        stats = sw.get_port_statistics()
+        assert len(stats) == 16
+        assert (stats[0].tx_pkts, stats[0].rx_pkts) == (1000, 100)
+        assert (stats[15].tx_pkts, stats[15].tx_errs) == (16000, 16)
 
     def test_port_numbers_1_based(self, sw):
         sw._session.get.return_value = make_response(PORT_STATS_HTML)
