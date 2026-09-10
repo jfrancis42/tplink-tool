@@ -134,8 +134,16 @@ class PortInfo:
 @dataclass
 class PortStats:
     port: int
-    tx_pkts: int
-    rx_pkts: int
+    tx_pkts: int                 # TxGoodPkt
+    rx_pkts: int                 # RxGoodPkt
+    tx_errs: int = 0             # TxBadPkt
+    rx_errs: int = 0             # RxBadPkt
+
+    def __str__(self):
+        s = f"Port {self.port:2d}: tx={self.tx_pkts} rx={self.rx_pkts}"
+        if self.tx_errs or self.rx_errs:
+            s += f"  ERRORS tx={self.tx_errs} rx={self.rx_errs}"
+        return s
 
 
 @dataclass
@@ -304,6 +312,56 @@ def _js_to_py(value_str: str) -> Any:
         pass
 
     return value_str  # bare word / unparseable
+
+
+
+def _extract_tmp_info(html: str) -> Optional[List[int]]:
+    """
+    The flat `var tmp_info = "1 6 2256655 0 ..."` array, as integers.
+
+    THE 16-PORT MODELS ENCODE EVERYTHING THIS WAY. TL-SG108E (8 port) emits a
+    JavaScript object -- `var all_info = {state:[...], link_status:[...]}` --
+    while TL-SG1016DE (16 port) emits one space-separated string and lets the
+    page do `all_info = tmp_info.split(" ")`.
+
+    That difference broke both readers on the 16-port switch, in two different
+    ways. get_port_settings() found no `all_info` at all and raised
+    "Could not parse PortSettingRpm.htm". get_port_statistics() DID find one --
+    the literal source text `tmp_info.split(" ")` -- got a str back, and died
+    on `AttributeError: 'str' object has no attribute 'get'`, which points
+    nowhere near the real cause.
+    """
+    m = re.search(r'\bvar\s+tmp_info\s*=\s*"([^"]*)"', html)
+    if not m:
+        return None
+    try:
+        return [int(x) for x in m.group(1).split()]
+    except ValueError:
+        return None
+
+
+
+def _extract_label_table(html: str) -> dict:
+    """Label -> value from an HTML table of `<td>Label</td><td>Value</td>`.
+
+    The 16-port models render system information as a TABLE; the 8-port models
+    put the same fields in a JavaScript `info_ds` object. A reader that only
+    knows the JS form fails on a TL-SG1016DE with "Could not parse
+    SystemInfoRpm.htm", which sounds like a firmware or authentication problem
+    rather than a page that is simply laid out differently.
+    """
+    cells = [
+        re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', c)).replace('\xa0', ' ').strip()
+        for c in re.findall(r'<td[^>]*>(.*?)</td>', html, re.S | re.I)
+    ]
+    out = {}
+    for i in range(len(cells) - 1):
+        k = cells[i].rstrip(':')
+        # first occurrence wins: the page repeats "Device Description" for the
+        # edit field further down, and that copy is empty.
+        if k and cells[i + 1] and k not in out:
+            out[k] = cells[i + 1]
+    return out
 
 
 def _extract_var(html: str, varname: str) -> Any:
@@ -593,7 +651,19 @@ class Switch:
         html = self._page('SystemInfoRpm')
         ds = _extract_var(html, 'info_ds')
         if ds is None:
-            raise RuntimeError('Could not parse SystemInfoRpm.htm')
+            # 16-port models render this as a table instead of a JS object.
+            t = _extract_label_table(html)
+            if 'MAC Address' not in t:
+                raise RuntimeError('Could not parse SystemInfoRpm.htm')
+            return SystemInfo(
+                description=t.get('Device Description', ''),
+                mac=t.get('MAC Address', ''),
+                ip=t.get('IP Address', ''),
+                netmask=t.get('Subnet Mask', ''),
+                gateway=t.get('Default Gateway', ''),
+                firmware=t.get('Firmware Version', ''),
+                hardware=t.get('Hardware Version', ''),
+            )
         return SystemInfo(
             description=ds['descriStr'][0],
             mac=ds['macStr'][0],
@@ -729,8 +799,33 @@ class Switch:
         html = self._page('PortSettingRpm')
         n = _extract_var(html, 'max_port_num') or 8
         ai = _extract_var(html, 'all_info')
+
+        # 16-PORT: no `all_info` on this page at all -- the firmware emits a
+        # flat `tmp_info` of SIX values per port: trunk, enabled, speed_cfg,
+        # speed_act, fc_cfg, fc_act. Without this branch every 16-port switch
+        # raised "Could not parse PortSettingRpm.htm", which reads like a
+        # firmware or auth problem rather than "this model is laid out
+        # differently". Decoded against a live TL-SG1016DE and checked against
+        # three ports whose real speed was already known.
         if ai is None:
-            raise RuntimeError('Could not parse PortSettingRpm.htm')
+            flat = _extract_tmp_info(html)
+            if flat is None:
+                raise RuntimeError('Could not parse PortSettingRpm.htm')
+            out = []
+            for i in range(n):
+                g = flat[i * 6:(i + 1) * 6]
+                g += [0] * (6 - len(g))
+                trunk, enabled, spd_cfg, spd_act, fc_cfg, fc_act = g
+                out.append(PortInfo(
+                    port=i + 1,
+                    enabled=bool(enabled),
+                    speed_cfg=PortSpeed(spd_cfg) if spd_cfg in PortSpeed._value2member_map_ else None,
+                    speed_act=PortSpeed(spd_act) if spd_act in PortSpeed._value2member_map_ else None,
+                    fc_cfg=bool(fc_cfg),
+                    fc_act=bool(fc_act),
+                    trunk_id=trunk,
+                ))
+            return out
 
         ports = []
         for i in range(n):
@@ -792,18 +887,36 @@ class Switch:
         html = self._page('PortStatisticsRpm')
         n = _extract_var(html, 'max_port_num') or 8
         ai = _extract_var(html, 'all_info')
-        if ai is None:
-            raise RuntimeError('Could not parse PortStatisticsRpm.htm')
 
-        pkts = ai.get('pkts', [])
-        # Firmware packs stats as pairs: [tx_p1, rx_p1, tx_p2, rx_p2, ...]
-        # but the actual layout depends on firmware version - use stride of 2
-        stats = []
-        for i in range(n):
-            tx = pkts[i * 2]     if len(pkts) > i * 2     else 0
-            rx = pkts[i * 2 + 1] if len(pkts) > i * 2 + 1 else 0
-            stats.append(PortStats(port=i + 1, tx_pkts=tx, rx_pkts=rx))
-        return stats
+        # 8-PORT: {state:[...], link_status:[...], pkts:[...]}, and `pkts` is
+        # FOUR values per port -- TxGood, TxBad, RxGood, RxBad. This used to
+        # read it with a stride of 2, which silently reported every port's
+        # counters as another port's, and zero for anything past the middle:
+        # on a live TL-SG108E every port read tx=0 rx=0 while port 8 had in
+        # fact passed 2.5M packets and logged 14,086 receive errors.
+        if isinstance(ai, dict):
+            pk = ai.get('pkts') or ai.get('pkt') or []
+            out = []
+            for i in range(n):
+                g = pk[i * 4:(i + 1) * 4]
+                g += [0] * (4 - len(g))
+                out.append(PortStats(port=i + 1, tx_pkts=g[0], tx_errs=g[1],
+                                     rx_pkts=g[2], rx_errs=g[3]))
+            return out
+
+        # 16-PORT: a flat tmp_info of SIX values per port, the first two being
+        # state and link_status, then the same four counters.
+        flat = _extract_tmp_info(html)
+        if flat is not None:
+            out = []
+            for i in range(n):
+                g = flat[i * 6:(i + 1) * 6]
+                g += [0] * (6 - len(g))
+                out.append(PortStats(port=i + 1, tx_pkts=g[2], tx_errs=g[3],
+                                     rx_pkts=g[4], rx_errs=g[5]))
+            return out
+
+        raise RuntimeError('Could not parse PortStatisticsRpm.htm')
 
     def reset_port_statistics(self, port: Optional[int] = None):
         """
