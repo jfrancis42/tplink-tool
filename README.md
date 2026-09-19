@@ -16,6 +16,7 @@ read and write operations:
 | Model | Hardware version | Firmware | Protocol |
 |-------|-----------------|----------|----------|
 | TL-SG108E | v6.0 | 1.0.0 Build 20230218 Rel.50633 | Cookie-based (`Switch`) |
+| TL-SG108PE | v5.0 | 1.0.0 Build 20220531 Rel.35386 | Cookie-based (`Switch`) + PoE |
 | TL-SG1016DE | v2.0 | 1.0.1 Build 20151218 Rel.58739 | IP-based (`SwitchDE`) |
 
 Other TP-Link Easy Smart and DE-series models with the same web UI are
@@ -157,6 +158,12 @@ See [docs/cli.md](docs/cli.md) for the full command reference.
 - Bandwidth control (ingress/egress rate limiting)
 - Storm control
 - Cable diagnostics (TDR) — **see firmware note below**
+- PoE Auto Recovery configuration and counters
+- PoE Extend Mode configuration
+
+PoE Easy Smart firmware exposes Auto Recovery and Extend Mode, but does not
+expose live voltage, current, wattage, or powered-device detection through the
+web UI pages supported here.
 
 ### Write operations
 Everything listed above, plus:
