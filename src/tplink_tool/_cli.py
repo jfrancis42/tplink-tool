@@ -260,7 +260,7 @@ class SwitchCLI(cmd.Cmd):
         if not ports:
             print('  Usage: interface port <N>  or  interface range port <N>-<M>')
             return
-        invalid = [p for p in ports if p < 1 or p > 8]
+        invalid = [p for p in ports if p < 1 or p > self.sw._port_count]
         if invalid:
             print(f'  % Invalid port(s): {invalid}')
             return
